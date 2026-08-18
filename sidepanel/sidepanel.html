@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Spider — Side Panel</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div class="panel-container">
+
+    <!-- Header -->
+    <header class="panel-header">
+      <div class="header-top">
+        <div class="logo-row">
+          <svg class="spider-icon" viewBox="0 0 32 32" fill="none">
+            <circle cx="16" cy="16" r="14" stroke="currentColor" stroke-width="2"/>
+            <path d="M16 2 L16 10 M16 22 L16 30 M2 16 L10 16 M22 16 L30 16
+                     M5.6 5.6 L11 11 M21 21 L26.4 26.4
+                     M26.4 5.6 L21 11 M11 21 L5.6 26.4"
+                  stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <h1>Spider</h1>
+        </div>
+        <div class="header-actions">
+          <button id="clearBtn" class="btn-icon-only" title="Clear results">🗑️</button>
+          <button id="optionsBtn" class="btn-icon-only" title="Settings">⚙️</button>
+        </div>
+      </div>
+      <!-- Tabs -->
+      <nav class="tab-row">
+        <button class="tab active" data-tab="scrape">Scrape</button>
+        <button class="tab" data-tab="crawl">Crawl</button>
+        <button class="tab" data-tab="search">Search</button>
+        <button class="tab" data-tab="ai">AI Extract</button>
+        <button class="tab" data-tab="leads">Leads</button>
+      </nav>
+    </header>
+
+    <!-- ─── Scrape Tab ─── -->
+    <section class="tab-content active" id="tab-scrape">
+      <div class="form-group">
+        <label class="label">URL</label>
+        <input type="url" id="scrapeUrl" class="input" placeholder="https://example.com" />
+      </div>
+      <div class="form-row">
+        <div class="form-group half">
+          <label class="label">Mode</label>
+          <select id="scrapeMode" class="select">
+            <option value="smart">Smart</option>
+            <option value="http">HTTP</option>
+            <option value="chrome">Chrome</option>
+          </select>
+        </div>
+        <div class="form-group half">
+          <label class="label">Format</label>
+          <select id="scrapeFormat" class="select">
+            <option value="markdown">Markdown</option>
+            <option value="html">HTML</option>
+            <option value="text">Text</option>
+            <option value="raw">Raw</option>
+          </select>
+        </div>
+      </div>
+      <button id="scrapeBtn" class="btn btn-primary">⚡ Scrape Page</button>
+    </section>
+
+    <!-- ─── Crawl Tab ─── -->
+    <section class="tab-content" id="tab-crawl">
+      <div class="form-group">
+        <label class="label">Starting URL</label>
+        <input type="url" id="crawlUrl" class="input" placeholder="https://example.com" />
+      </div>
+      <div class="form-row">
+        <div class="form-group third">
+          <label class="label">Pages</label>
+          <input type="number" id="crawlLimit" class="input" value="10" min="1" max="500" />
+        </div>
+        <div class="form-group third">
+          <label class="label">Depth</label>
+          <input type="number" id="crawlDepth" class="input" value="3" min="1" max="10" />
+        </div>
+        <div class="form-group third">
+          <label class="label">Mode</label>
+          <select id="crawlMode" class="select">
+            <option value="smart">Smart</option>
+            <option value="http">HTTP</option>
+            <option value="chrome">Chrome</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="label">Format</label>
+        <select id="crawlFormat" class="select">
+          <option value="markdown">Markdown</option>
+          <option value="html">HTML</option>
+          <option value="text">Text</option>
+        </select>
+      </div>
+      <label class="checkbox-label">
+        <input type="checkbox" id="crawlRobots" checked />
+        <span>Respect robots.txt</span>
+      </label>
+      <div class="btn-row">
+        <button id="crawlBtn" class="btn btn-primary">🕷️ Start Crawl</button>
+        <button id="crawlStopBtn" class="btn btn-danger hidden">⏹ Stop</button>
+      </div>
+    </section>
+
+    <!-- ─── Search Tab ─── -->
+    <section class="tab-content" id="tab-search">
+      <div class="form-group">
+        <label class="label">Query</label>
+        <input type="text" id="searchQuery" class="input" placeholder="Search the web…" />
+      </div>
+      <div class="form-row">
+        <div class="form-group half">
+          <label class="label">Results</label>
+          <select id="searchLimit" class="select">
+            <option value="5">5</option>
+            <option value="10" selected>10</option>
+            <option value="20">20</option>
+            <option value="50">50</option>
+          </select>
+        </div>
+        <div class="form-group half">
+          <label class="label">Mode</label>
+          <select id="searchMode" class="select">
+            <option value="smart">Smart</option>
+            <option value="http">HTTP</option>
+          </select>
+        </div>
+      </div>
+      <button id="searchBtn" class="btn btn-primary">🔍 Search</button>
+    </section>
+
+    <!-- ─── AI Extract Tab ─── -->
+    <section class="tab-content" id="tab-ai">
+      <p class="section-desc">
+        Process scraped content with your own AI keys (BYOK).
+        Configure providers in <a href="#" id="openOptionsFromAi">Settings →</a>.
+      </p>
+      <div class="form-group">
+        <label class="label">Content source</label>
+        <select id="aiContentSource" class="select">
+          <option value="last-result">Last scrape/crawl result</option>
+          <option value="clipboard">Clipboard text</option>
+          <option value="manual">Paste below</option>
+        </select>
+      </div>
+      <div class="form-group" id="aiManualGroup" style="display:none">
+        <label class="label">Paste content</label>
+        <textarea id="aiManualContent" class="textarea" rows="5" placeholder="Paste web content here…"></textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group half">
+          <label class="label">AI Provider</label>
+          <select id="aiProvider" class="select">
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="gemini">Gemini</option>
+            <option value="ollama">Ollama (local)</option>
+          </select>
+        </div>
+        <div class="form-group half">
+          <label class="label">Preset</label>
+          <select id="aiPreset" class="select">
+            <option value="summarize">Summarize</option>
+            <option value="extractEmails">Extract Emails</option>
+            <option value="extractEntities">Extract Entities</option>
+            <option value="cleanMarkdown">Clean Markdown</option>
+            <option value="custom">Custom Prompt</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group" id="aiCustomGroup" style="display:none">
+        <label class="label">Custom prompt</label>
+        <textarea id="aiCustomPrompt" class="textarea" rows="3"
+          placeholder="e.g., Extract all product names and prices…"></textarea>
+      </div>
+      <button id="aiExtractBtn" class="btn btn-primary">🤖 Run AI Extraction</button>
+    </section>
+
+
+    <!-- ─── Leads Tab ─── -->
+    <section class="tab-content" id="tab-leads">
+      <p class="section-desc">
+        Find B2B leads with Spider Cloud, categorize with AI, store in Turso,
+        and verify emails with Plunk. <a href="#" id="openOptionsFromLeads">Settings →</a>
+      </p>
+      <div id="leadsConfigWarn" class="warning-banner hidden"></div>
+
+      <div class="form-group">
+        <label class="label">Targets (domains or URLs, space-separated)</label>
+        <input type="text" id="leadsTargets" class="input" placeholder="acme.com globex.io" />
+      </div>
+      <div class="form-row">
+        <div class="form-group half">
+          <label class="label">Pages per site</label>
+          <input type="number" id="leadsLimit" class="input" value="10" min="1" max="200" />
+        </div>
+        <div class="form-group half">
+          <label class="label">Extraction</label>
+          <select id="leadsExtract" class="select">
+            <option value="auto">Auto (Spider AI → local)</option>
+            <option value="local">Local (your AI key)</option>
+            <option value="spider">Spider AI only</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group half">
+          <label class="label">URL filter (regex, optional)</label>
+          <input type="text" id="leadsFilter" class="input" placeholder="/(team|contact|about)/" />
+        </div>
+        <div class="form-group half">
+          <label class="label" style="display:block;visibility:hidden">.</label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="leadsVerify" checked />
+            <span>Verify emails with Plunk</span>
+          </label>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button id="leadsHuntBtn" class="btn btn-primary">🎯 Hunt</button>
+        <button id="leadsSearchBtn" class="btn btn-outline">🔍 Search web</button>
+      </div>
+      <div class="btn-row">
+        <button id="leadsVerifyBtn" class="btn btn-sm btn-outline">✅ Verify stored</button>
+        <button id="leadsStatsBtn" class="btn btn-sm btn-outline">📊 Stats</button>
+        <button id="leadsExportBtn" class="btn btn-sm btn-outline">💾 Export CSV</button>
+      </div>
+
+      <div class="form-group" style="margin-top:12px">
+        <label class="label">🤖 AI Agent objective (the AI drives search/crawl/extract/store/verify via tools)</label>
+        <input type="text" id="agentPrompt" class="input"
+          placeholder="Find fintech companies interested in AI and verify their emails" />
+        <button id="agentBtn" class="btn btn-sm btn-outline" style="margin-top:6px">▶ Run AI Agent</button>
+      </div>
+
+      <div id="leadsSummary" class="leads-summary hidden"></div>
+      <div id="leadsTableWrap" class="leads-table-wrap"></div>
+      <div id="leadsEmpty" class="empty-state">
+        <div class="empty-icon">🎯</div>
+        <p>Hunt a site or search the web to build your lead list.</p>
+      </div>
+    </section>
+
+    <!-- ─── Results Area ─── -->
+    <section class="results-section">
+      <div class="results-header">
+        <h2 id="resultsTitle">Results</h2>
+        <div class="results-actions">
+          <button id="copyAllBtn" class="btn btn-sm btn-outline" title="Copy all">📋 Copy</button>
+          <button id="downloadBtn" class="btn btn-sm btn-outline" title="Download">💾 Save</button>
+          <span id="pageCounter" class="counter hidden"></span>
+        </div>
+      </div>
+      <div id="resultsContainer" class="results-container">
+        <div class="empty-state">
+          <div class="empty-icon">🕷️</div>
+          <p>Scrape a page, start a crawl, or search to see results here.</p>
+        </div>
+      </div>
+      <div id="progressBar" class="progress-bar hidden">
+        <div class="progress-fill"></div>
+      </div>
+      <div id="statusText" class="status-text hidden"></div>
+    </section>
+  </div>
+
+  <script src="sidepanel.js" type="module"></script>
+</body>
+</html>

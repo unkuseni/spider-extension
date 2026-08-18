@@ -1,0 +1,76 @@
+{
+  "manifest_version": 3,
+  "name": "Spider — Web Scraper & Crawler",
+  "version": "1.0.0",
+  "description": "Scrape any page, crawl entire sites, and extract clean web data — powered by Spider Cloud.",
+  "author": "spider-rs",
+  "homepage_url": "https://spider.cloud",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "spider@spider.cloud",
+      "strict_min_version": "127.0"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://api.spider.cloud/*",
+    "https://api.openai.com/*",
+    "https://api.anthropic.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.deepseek.com/*",
+    "https://next-api.useplunk.com/*",
+    "https://*.turso.io/*",
+    "http://localhost:*/*"
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Spider — Scrape or Crawl",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png"
+    }
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S",
+        "mac": "Command+Shift+S"
+      },
+      "description": "Open Spider popup"
+    },
+    "scrape-current-page": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+X",
+        "mac": "Command+Shift+X"
+      },
+      "description": "Quick-scrape the current page"
+    },
+    "open-side-panel": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Z",
+        "mac": "Command+Shift+Z"
+      },
+      "description": "Open Spider side panel"
+    }
+  }
+}

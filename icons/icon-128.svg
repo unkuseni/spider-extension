@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none">
+  <rect width="128" height="128" rx="24" fill="#7c5cfc"/>
+  <circle cx="64" cy="64" r="52" stroke="#fff" stroke-width="6" fill="none"/>
+  <line x1="28" y1="64" x2="52" y2="64" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+  <line x1="76" y1="64" x2="100" y2="64" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+  <line x1="64" y1="28" x2="64" y2="52" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+  <line x1="64" y1="76" x2="64" y2="100" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+  <!-- Diagonal legs for spider look -->
+  <line x1="28" y1="28" x2="48" y2="48" stroke="#fff" stroke-width="3.5" stroke-linecap="round"/>
+  <line x1="100" y1="28" x2="80" y2="48" stroke="#fff" stroke-width="3.5" stroke-linecap="round"/>
+  <line x1="28" y1="100" x2="48" y2="80" stroke="#fff" stroke-width="3.5" stroke-linecap="round"/>
+  <line x1="100" y1="100" x2="80" y2="80" stroke="#fff" stroke-width="3.5" stroke-linecap="round"/>
+</svg>

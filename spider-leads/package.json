@@ -1,0 +1,23 @@
+{
+  "name": "spider-leads",
+  "version": "0.1.0",
+  "description": "Find, categorize, store, and verify B2B leads with Spider Cloud + AI + Turso + Plunk",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/index.ts",
+    "hunt": "node --env-file-if-exists=.env src/index.ts hunt",
+    "mock": "node scripts/mock-api.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.15.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^24.0.0"
+  }
+}

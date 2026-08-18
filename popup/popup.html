@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Spider — Popup</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+
+    <!-- Header -->
+    <header class="popup-header">
+      <div class="logo-row">
+        <svg class="spider-icon" viewBox="0 0 32 32" fill="none">
+          <circle cx="16" cy="16" r="14" stroke="currentColor" stroke-width="2"/>
+          <path d="M16 2 L16 10 M16 22 L16 30 M2 16 L10 16 M22 16 L30 16
+                   M5.6 5.6 L11 11 M21 21 L26.4 26.4
+                   M26.4 5.6 L21 11 M11 21 L5.6 26.4"
+                stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <h1>Spider</h1>
+      </div>
+      <p class="subtitle">Web Scraper &amp; Crawler</p>
+    </header>
+
+    <!-- API Key Warning -->
+    <div id="apiKeyWarning" class="warning-banner hidden">
+      <span>⚠️ No API key set</span>
+      <button id="goToOptions" class="btn-link">Configure →</button>
+    </div>
+
+    <!-- Current page URL -->
+    <div class="current-url-section">
+      <label class="label">Current page</label>
+      <div class="url-display" id="currentUrl" title="Click to edit">Loading…</div>
+    </div>
+
+    <!-- Action tabs -->
+    <div class="tab-row">
+      <button class="tab active" data-tab="scrape">Scrape</button>
+      <button class="tab" data-tab="crawl">Crawl</button>
+      <button class="tab" data-tab="search">Search</button>
+    </div>
+
+    <!-- ===== Scrape tab ===== -->
+    <div class="tab-content active" id="tab-scrape">
+      <div class="form-group">
+        <label class="label">Mode</label>
+        <select id="scrapeMode" class="select">
+          <option value="smart" selected>Smart (auto HTTP/Chrome)</option>
+          <option value="http">HTTP (fastest)</option>
+          <option value="chrome">Chrome (JS rendering)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="label">Format</label>
+        <select id="scrapeFormat" class="select">
+          <option value="markdown" selected>Markdown</option>
+          <option value="html">HTML</option>
+          <option value="text">Plain Text</option>
+          <option value="raw">Raw HTML</option>
+          <option value="commonmark">CommonMark</option>
+        </select>
+      </div>
+      <button id="scrapeBtn" class="btn btn-primary">
+        <span class="btn-icon">⚡</span> Scrape Page
+      </button>
+    </div>
+
+    <!-- ===== Crawl tab ===== -->
+    <div class="tab-content" id="tab-crawl">
+      <div class="form-group">
+        <label class="label">Starting URL</label>
+        <input type="url" id="crawlUrl" class="input" placeholder="https://example.com" />
+      </div>
+      <div class="form-row">
+        <div class="form-group half">
+          <label class="label">Max pages</label>
+          <input type="number" id="crawlLimit" class="input" value="10" min="1" max="500" />
+        </div>
+        <div class="form-group half">
+          <label class="label">Depth</label>
+          <input type="number" id="crawlDepth" class="input" value="3" min="1" max="10" />
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="label">Mode</label>
+        <select id="crawlMode" class="select">
+          <option value="smart" selected>Smart (auto HTTP/Chrome)</option>
+          <option value="http">HTTP (fastest)</option>
+          <option value="chrome">Chrome (JS rendering)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="label">Format</label>
+        <select id="crawlFormat" class="select">
+          <option value="markdown" selected>Markdown</option>
+          <option value="html">HTML</option>
+          <option value="text">Plain Text</option>
+        </select>
+      </div>
+      <label class="checkbox-label">
+        <input type="checkbox" id="crawlRobots" checked />
+        <span>Respect robots.txt</span>
+      </label>
+      <button id="crawlBtn" class="btn btn-primary">
+        <span class="btn-icon">🕷️</span> Start Crawl
+      </button>
+    </div>
+
+    <!-- ===== Search tab ===== -->
+    <div class="tab-content" id="tab-search">
+      <div class="form-group">
+        <label class="label">Search query</label>
+        <input type="text" id="searchQuery" class="input" placeholder="Search the web…" />
+      </div>
+      <div class="form-group">
+        <label class="label">Results</label>
+        <select id="searchLimit" class="select">
+          <option value="5">5 results</option>
+          <option value="10" selected>10 results</option>
+          <option value="20">20 results</option>
+          <option value="50">50 results</option>
+        </select>
+      </div>
+      <button id="searchBtn" class="btn btn-primary">
+        <span class="btn-icon">🔍</span> Search
+      </button>
+    </div>
+
+    <!-- Status & quick links -->
+    <div id="statusBar" class="status-bar hidden"></div>
+    <button id="findLeadsBtn" class="btn btn-primary" style="margin-bottom:8px">
+      <span class="btn-icon">🎯</span> Find Leads
+    </button>
+    <div class="footer-links">
+      <a href="#" id="openSidePanel">📋 Open full panel</a>
+      <a href="#" id="openOptions">⚙️ Settings</a>
+    </div>
+  </div>
+
+  <script src="popup.js" type="module"></script>
+</body>
+</html>
