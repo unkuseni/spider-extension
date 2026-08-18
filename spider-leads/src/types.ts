@@ -136,7 +136,7 @@ export interface JsonToolDef {
         /** Optional dot-path into the JSON response, e.g. "data.items". */
         extract?: string;
       }
-    | { type: "builtin"; id: "fetch_url" | "search_web" | "fetch_jobs"; params?: Record<string, unknown> };
+    | { type: "builtin"; id: "fetch_url" | "search_web" | "fetch_jobs" | "fetch_hn_jobs"; params?: Record<string, unknown> };
 }
 
 export interface JsonWebhookDef {

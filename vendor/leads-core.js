@@ -6530,6 +6530,78 @@ function getPath(obj, path) {
   }
   return cur;
 }
+function hnHtmlToText(html) {
+  let applyUrl = null;
+  const linkMatch = String(html).match(/href="([^"]+)"/i);
+  if (linkMatch) {
+    const decoded = linkMatch[1].replace(/&#x27;|&#39;/gi, "'").replace(/&#x2F;/gi, "/").replace(/&amp;/gi, "&");
+    if (/^https?:\/\//i.test(decoded) && !/news\.ycombinator\.com|hn\.algolia\.com/.test(decoded)) {
+      applyUrl = decoded;
+    }
+  }
+  let text = String(html).replace(/<p\/?>/gi, "\n").replace(/<[^>]+>/g, "").replace(/&#x27;|&#39;/gi, "'").replace(/&#x2F;/gi, "/").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/\s+/g, " ").trim();
+  return { text, applyUrl };
+}
+function parseHnComment(rawHtml) {
+  const { text, applyUrl } = hnHtmlToText(rawHtml);
+  const parts = text.split(" | ").map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 0) {
+    return { company: "", title: null, location: null, remote: false, meta: [], description: "", applyUrl };
+  }
+  const company = parts[0];
+  const description = parts.length > 1 ? parts.slice(-1)[0] : "";
+  const meta = parts.length > 2 ? parts.slice(1, -1) : parts.length === 2 ? parts.slice(1, -1) : [];
+  const all = (meta.join(" ") + " " + description).toLowerCase();
+  const remote = /\b(remote|fully remote|distributed)\b/.test(all);
+  let title = null;
+  let location = null;
+  if (meta.length >= 1) {
+    const first = meta[0];
+    if (first.length <= 60 && !/^(https?:|\/)/.test(first)) title = first;
+  }
+  if (meta.length >= 2) location = meta[1];
+  if (meta.length === 1 && !title) location = meta[0];
+  return { company, title, location, remote, meta, description, applyUrl };
+}
+async function builtinFetchHnJobs(args) {
+  const limit = Math.min(Number(args.limit) || 25, 100);
+  const minCreated = Math.floor(Date.now() / 1e3) - 45 * 24 * 3600;
+  try {
+    const search = await fetch(
+      "https://hn.algolia.com/api/v1/search?tags=story,author_whoishiring&query=hiring&hitsPerPage=1&numericFilters=created_at_i%3E" + minCreated
+    );
+    if (!search.ok) return JSON.stringify({ error: "HN search: HTTP " + search.status });
+    const searchData = await search.json();
+    const story = searchData?.hits?.[0];
+    if (!story?.objectID) return JSON.stringify({ error: "no recent 'Who is hiring?' thread found" });
+    const items = await fetch("https://hn.algolia.com/api/v1/items/" + story.objectID);
+    if (!items.ok) return JSON.stringify({ error: "HN items: HTTP " + items.status });
+    const itemData = await items.json();
+    const children = Array.isArray(itemData.children) ? itemData.children : [];
+    const jobs = children.slice(0, limit).map((c2) => {
+      const parsed = parseHnComment(String(c2.text ?? ""));
+      return {
+        company: parsed.company,
+        title: parsed.title,
+        location: parsed.location,
+        remote: parsed.remote,
+        meta: parsed.meta,
+        description: parsed.description,
+        applyUrl: parsed.applyUrl,
+        hnUrl: "https://news.ycombinator.com/item?id=" + c2.objectID,
+        author: c2.author ?? ""
+      };
+    }).filter((j) => j.company.length > 0);
+    return JSON.stringify({
+      thread: { id: story.objectID, title: story.title ?? "", url: "https://news.ycombinator.com/item?id=" + story.objectID },
+      totalPosts: children.length,
+      count: jobs.length,
+      jobs
+    });
+  } catch (err) {
+    return JSON.stringify({ error: err.message });
+  }
+}
 async function builtinFetchUrl(cfg, args) {
   const url = String(args.url ?? "");
   if (!url) return JSON.stringify({ error: "url is required" });
@@ -6650,6 +6722,7 @@ function makeTool(cfg, tool) {
       if (builtin === "fetch_url") return builtinFetchUrl(cfg, merged);
       if (builtin === "search_web") return builtinSearchWeb(cfg, merged);
       if (builtin === "fetch_jobs") return builtinFetchJobs(merged);
+      if (builtin === "fetch_hn_jobs") return builtinFetchHnJobs(merged);
       return JSON.stringify({ error: "unknown builtin action: " + builtin });
     }
   };

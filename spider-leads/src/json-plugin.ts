@@ -92,6 +92,109 @@ function getPath(obj: unknown, path: string): unknown {
 }
 
 // ---------------------------------------------------------------------------
+// Hacker News "Who is hiring?" — official Algolia API, no scraping needed
+// ---------------------------------------------------------------------------
+
+/** Decode HTML entities + strip tags; keep the first external link as apply_url. */
+export function hnHtmlToText(html: string): { text: string; applyUrl: string | null } {
+  let applyUrl: string | null = null;
+  const linkMatch = String(html).match(/href="([^"]+)"/i);
+  if (linkMatch) {
+    const decoded = linkMatch[1]
+      .replace(/&#x27;|&#39;/gi, "'")
+      .replace(/&#x2F;/gi, "/")
+      .replace(/&amp;/gi, "&");
+    if (/^https?:\/\//i.test(decoded) && !/news\.ycombinator\.com|hn\.algolia\.com/.test(decoded)) {
+      applyUrl = decoded;
+    }
+  }
+  let text = String(html)
+    .replace(/<p\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&#x27;|&#39;/gi, "'")
+    .replace(/&#x2F;/gi, "/")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+  return { text, applyUrl };
+}
+
+/** Parse a "Who is hiring?" comment: Company | Title | Location | Meta… | Description */
+export function parseHnComment(rawHtml: string): {
+  company: string;
+  title: string | null;
+  location: string | null;
+  remote: boolean;
+  meta: string[];
+  description: string;
+  applyUrl: string | null;
+} {
+  const { text, applyUrl } = hnHtmlToText(rawHtml);
+  const parts = text.split(" | ").map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 0) {
+    return { company: "", title: null, location: null, remote: false, meta: [], description: "", applyUrl };
+  }
+  const company = parts[0];
+  const description = parts.length > 1 ? parts.slice(-1)[0] : "";
+  const meta = parts.length > 2 ? parts.slice(1, -1) : parts.length === 2 ? parts.slice(1, -1) : [];
+  const all = (meta.join(" ") + " " + description).toLowerCase();
+  const remote = /\b(remote|fully remote|distributed)\b/.test(all);
+  let title: string | null = null;
+  let location: string | null = null;
+  if (meta.length >= 1) {
+    const first = meta[0];
+    if (first.length <= 60 && !/^(https?:|\/)/.test(first)) title = first;
+  }
+  if (meta.length >= 2) location = meta[1];
+  if (meta.length === 1 && !title) location = meta[0];
+  return { company, title, location, remote, meta, description, applyUrl };
+}
+
+async function builtinFetchHnJobs(args: any): Promise<string> {
+  const limit = Math.min(Number(args.limit) || 25, 100);
+  const minCreated = Math.floor(Date.now() / 1000) - 45 * 24 * 3600;
+  try {
+    // Latest "Who is hiring?" thread from the official HN user
+    const search = await fetch(
+      "https://hn.algolia.com/api/v1/search?tags=story,author_whoishiring&query=hiring" +
+        "&hitsPerPage=1&numericFilters=created_at_i%3E" + minCreated
+    );
+    if (!search.ok) return JSON.stringify({ error: "HN search: HTTP " + search.status });
+    const searchData: any = await search.json();
+    const story = searchData?.hits?.[0];
+    if (!story?.objectID) return JSON.stringify({ error: "no recent 'Who is hiring?' thread found" });
+    const items = await fetch("https://hn.algolia.com/api/v1/items/" + story.objectID);
+    if (!items.ok) return JSON.stringify({ error: "HN items: HTTP " + items.status });
+    const itemData: any = await items.json();
+    const children: any[] = Array.isArray(itemData.children) ? itemData.children : [];
+    const jobs = children.slice(0, limit).map((c) => {
+      const parsed = parseHnComment(String(c.text ?? ""));
+      return {
+        company: parsed.company,
+        title: parsed.title,
+        location: parsed.location,
+        remote: parsed.remote,
+        meta: parsed.meta,
+        description: parsed.description,
+        applyUrl: parsed.applyUrl,
+        hnUrl: "https://news.ycombinator.com/item?id=" + c.objectID,
+        author: c.author ?? "",
+      };
+    }).filter((j) => j.company.length > 0);
+    return JSON.stringify({
+      thread: { id: story.objectID, title: story.title ?? "", url: "https://news.ycombinator.com/item?id=" + story.objectID },
+      totalPosts: children.length,
+      count: jobs.length,
+      jobs,
+    });
+  } catch (err) {
+    return JSON.stringify({ error: (err as Error).message });
+  }
+}
+// ---------------------------------------------------------------------------
 // Tool actions
 // ---------------------------------------------------------------------------
 
@@ -215,6 +318,7 @@ function makeTool(cfg: Config | undefined, tool: JsonToolDef): PluginTool {
       if (builtin === "fetch_url") return builtinFetchUrl(cfg, merged);
       if (builtin === "search_web") return builtinSearchWeb(cfg, merged);
       if (builtin === "fetch_jobs") return builtinFetchJobs(merged);
+      if (builtin === "fetch_hn_jobs") return builtinFetchHnJobs(merged);
       return JSON.stringify({ error: "unknown builtin action: " + builtin });
     },
   };

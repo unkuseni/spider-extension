@@ -1,0 +1,25 @@
+{
+  "id": "hn-hiring",
+  "name": "HN Hiring",
+  "version": "0.1.0",
+  "description": "Agent tool fetch_hn_jobs: parse the latest Hacker News 'Who is hiring?' thread via the official HN API — company, title, location, remote flag, apply link.",
+  "tools": [
+    {
+      "name": "fetch_hn_jobs",
+      "description": "Fetch job postings from the latest Hacker News 'Who is hiring?' thread (official HN API, no scraping). Returns company, title, location, remote flag, description, apply URL, and HN link per posting.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Max postings (default 25, max 100)"
+          }
+        }
+      },
+      "action": {
+        "type": "builtin",
+        "id": "fetch_hn_jobs"
+      }
+    }
+  ]
+}

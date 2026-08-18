@@ -92,6 +92,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function handleMessage(message, sender) {
+  // Only accept messages from this extension's own contexts.
+  if (sender && sender.id && sender.id !== chrome.runtime.id) {
+    return { error: 'unauthorized sender' };
+  }
   switch (message.action) {
 
     // ---------------------------------------------------------------
