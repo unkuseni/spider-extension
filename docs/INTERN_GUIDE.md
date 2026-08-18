@@ -378,6 +378,32 @@ test with real keys are quotas, rate limits, and real-world anti-bot behavior.
 4. Rebuild the extension bundle: `npm run build:vendor` (from the repo root).
 5. Reload the extension, re-run `npm run build:firefox` if you test Firefox.
 
+### Browser assistant (Assist tab)
+
+The AI can act on the page you're viewing — but only with **per-action approval**: it proposes
+(navigate, fill_form, set_text, click, scroll_to), you Approve/Deny each. Enforced rails: no
+submit/send actions exist; visa/salary/demographic fields are never auto-filled; per-site
+allowlist (with runtime permission request); Stop button. Files: `lib/assist.js` (loop),
+`lib/browser-assist.js` (execution + allowlist), `lib/assist-page.js` (page-context helpers —
+self-contained, also unit-tested in Node with a fake DOM).
+
+### Career assist + AI plugin builder
+
+- The **Career** tab (side panel) builds a profile from a resume (PDF/DOCX/TXT parsed locally),
+  tailors resume + cover letter to a pasted job, scores fit, and drafts email/LinkedIn outreach.
+  The user reviews and sends — nothing is auto-submitted (job boards/LinkedIn prohibit bots, and
+  the attestation must come from the real applicant).
+- Options → Plugins → **Generate a plugin with AI** lets non-developers describe a plugin in
+  plain language; the AI writes the JSON, they review and install.
+
+### Writing a plugin
+
+Plugins add agent tools, pipeline hooks (beforeRun / onLead / afterRun), and exporters
+without touching core code. Drop a folder with `plugin.json` + `index.ts` into
+`spider-leads/plugins/` (see the shipped examples: `jobs-ats`, `webhook-leads`,
+`exporter-jsonl`), then `spider-leads plugins list` to verify. Details in the
+spider-leads README ("Plugin system"). Plugins are trusted code — audit before installing.
+
 ### Changing extraction or classification logic
 
 - Email type rules: `spider-leads/src/extract.ts` (`PERSONAL_DOMAINS`, `ROLE_LOCAL_PARTS`, `classifyEmailType`).

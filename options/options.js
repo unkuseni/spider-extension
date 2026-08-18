@@ -4,6 +4,10 @@
 import { getApiKey, setApiKey, getPreferences, setPreferences } from '../lib/spider-api.js';
 import { getAiConfigs, setAiConfigs, testAiConnection } from '../lib/ai-client.js';
 import { getLeadsSettings, setLeadsSettings } from '../lib/leads.js';
+import {
+  getInstalledPluginMeta, installPluginFromText, previewPluginText, removePlugin, setPluginEnabled,
+} from '../lib/plugins.js';
+import { buildPluginWithAI } from '../lib/plugin-builder.js';
 
 // ---------------------------------------------------------------------------
 // Init
@@ -13,6 +17,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadSpiderSettings();
   await loadAiSettings();
   await loadLeadsSettings();
+  await refreshInstalledPlugins();
   bindEvents();
 });
 
@@ -140,6 +145,155 @@ async function saveLeadsSettings() {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Plugins (no-code attach UI)
+// ---------------------------------------------------------------------------
+
+async function refreshInstalledPlugins() {
+  const wrap = document.getElementById('installedPlugins');
+  const list = await getInstalledPluginMeta();
+  if (list.length === 0) {
+    wrap.innerHTML = '<p class="small-muted">No plugins installed yet — attach one above.</p>';
+    return;
+  }
+  wrap.innerHTML = list.map((p) => {
+    const bits = [
+      p.tools.length ? 'tools: ' + p.tools.join(', ') : '',
+      p.hooks.length ? 'hooks: ' + p.hooks.join(', ') : '',
+      p.exporters.length ? 'exporters: ' + p.exporters.join(', ') : '',
+    ].filter(Boolean).join(' · ');
+    return '<div class="installed-plugin">' +
+      '<div style="display:flex;align-items:center;gap:8px">' +
+      '<input type="checkbox" data-plugin-toggle="' + p.id + '"' + (p.enabled ? ' checked' : '') + ' title="Enable/disable" />' +
+      '<b>' + escapeHtml(p.name) + '</b> <span class="small-muted">v' + escapeHtml(p.version) + '</span>' +
+      '</div>' +
+      '<div class="small-muted">' + escapeHtml(p.description) + (bits ? '<br>' + escapeHtml(bits) : '') + '</div>' +
+      '<button class="btn btn-sm btn-outline plugin-remove" data-plugin-remove="' + p.id + '" style="margin-top:6px">🗑 Remove</button>' +
+      '</div>';
+  }).join('');
+
+  wrap.querySelectorAll('[data-plugin-toggle]').forEach((cb) => {
+    cb.addEventListener('change', async () => {
+      await setPluginEnabled(cb.dataset.pluginToggle, cb.checked);
+    });
+  });
+  wrap.querySelectorAll('.plugin-remove').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      await removePlugin(btn.dataset.pluginRemove);
+      await refreshInstalledPlugins();
+    });
+  });
+}
+
+function pluginStatusMsg(msg, ok) {
+  const el = document.getElementById('pluginStatus');
+  el.textContent = msg;
+  el.className = 'status-msg ' + (ok ? 'success' : 'error');
+  setTimeout(() => { el.textContent = ''; }, 4000);
+}
+
+async function attachPluginFile() {
+  const input = document.getElementById('pluginFileInput');
+  const file = input.files && input.files[0];
+  if (!file) return pluginStatusMsg('Choose a plugin .json file first', false);
+  const text = await file.text();
+  const preview = previewPluginText(text);
+  if (!preview.ok) return pluginStatusMsg('✗ ' + preview.error, false);
+  if (preview.dataUrls.length > 0) {
+    const ok = window.confirm('This plugin can send data to:\n\n' + preview.dataUrls.join('\n') + '\n\nInstall it anyway?');
+    if (!ok) return pluginStatusMsg('Install cancelled', false);
+  }
+  const res = await installPluginFromText(text);
+  if (res.ok) {
+    pluginStatusMsg('✓ Plugin "' + res.plugin.name + '" v' + res.plugin.version + ' attached', true);
+    input.value = '';
+    await refreshInstalledPlugins();
+  } else {
+    pluginStatusMsg('✗ ' + res.error, false);
+  }
+}
+
+async function installPastedPlugin() {
+  const text = document.getElementById('pluginPaste').value.trim();
+  if (!text) return pluginStatusMsg('Paste a plugin JSON first', false);
+  const preview = previewPluginText(text);
+  if (!preview.ok) return pluginStatusMsg('✗ ' + preview.error, false);
+  if (preview.dataUrls.length > 0) {
+    const ok = window.confirm('This plugin can send data to:\n\n' + preview.dataUrls.join('\n') + '\n\nInstall it anyway?');
+    if (!ok) return pluginStatusMsg('Install cancelled', false);
+  }
+  const res = await installPluginFromText(text);
+  if (res.ok) {
+    pluginStatusMsg('✓ Plugin "' + res.plugin.name + '" v' + res.plugin.version + ' installed', true);
+    document.getElementById('pluginPaste').value = '';
+    await refreshInstalledPlugins();
+  } else {
+    pluginStatusMsg('✗ ' + res.error, false);
+  }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+
+// ---------------------------------------------------------------------------
+// AI plugin builder
+// ---------------------------------------------------------------------------
+
+let generatedPluginText = '';
+
+async function generatePluginWithAI() {
+  const prompt = document.getElementById('builderPrompt').value.trim();
+  const provider = document.getElementById('builderProvider').value;
+  const btn = document.getElementById('generatePluginBtn');
+  if (!prompt) return pluginStatusMsg('Describe the plugin you want first', false);
+  btn.disabled = true;
+  btn.textContent = '⏳ Generating…';
+  try {
+    const res = await buildPluginWithAI(provider, prompt);
+    if (res.ok) {
+      generatedPluginText = res.text;
+      document.getElementById('builderPreview').value = JSON.stringify(res.manifest, null, 2);
+      document.getElementById('installGeneratedBtn').disabled = false;
+      pluginStatusMsg('✓ Plugin generated — review and install', true);
+    } else {
+      generatedPluginText = res.text || '';
+      document.getElementById('builderPreview').value = res.text || '';
+      document.getElementById('installGeneratedBtn').disabled = true;
+      pluginStatusMsg('✗ ' + (res.error || 'generation failed'), false);
+    }
+  } catch (err) {
+    pluginStatusMsg('✗ ' + err.message, false);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Generate';
+  }
+}
+
+async function installGeneratedPlugin() {
+  const text = document.getElementById('builderPreview').value.trim();
+  if (!text) return pluginStatusMsg('Nothing to install', false);
+  const preview = previewPluginText(text);
+  if (!preview.ok) return pluginStatusMsg('✗ ' + preview.error, false);
+  if (preview.dataUrls.length > 0) {
+    const ok = window.confirm('This plugin can send data to:\n\n' + preview.dataUrls.join('\n') + '\n\nInstall it anyway?');
+    if (!ok) return pluginStatusMsg('Install cancelled', false);
+  }
+  const res = await installPluginFromText(text);
+  if (res.ok) {
+    pluginStatusMsg('✓ Plugin "' + res.plugin.name + '" v' + res.plugin.version + ' installed', true);
+    document.getElementById('builderPreview').value = '';
+    document.getElementById('installGeneratedBtn').disabled = true;
+    await refreshInstalledPlugins();
+  } else {
+    pluginStatusMsg('✗ ' + res.error, false);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Test AI connection
 // ---------------------------------------------------------------------------
@@ -198,6 +352,17 @@ function bindEvents() {
   document.getElementById('saveSpiderBtn').addEventListener('click', saveSpiderSettings);
   document.getElementById('saveAiBtn').addEventListener('click', saveAiSettings);
   document.getElementById('saveLeadsBtn').addEventListener('click', saveLeadsSettings);
+  document.getElementById('installPluginFileBtn').addEventListener('click', attachPluginFile);
+  document.getElementById('installPluginPasteBtn').addEventListener('click', installPastedPlugin);
+  document.getElementById('pluginFormatLink').addEventListener('click', (e) => {
+    e.preventDefault();
+    window.open('https://github.com/spider-rs/spider/blob/main/README.md', '_blank');
+  });
+  document.getElementById('generatePluginBtn').addEventListener('click', generatePluginWithAI);
+  document.getElementById('installGeneratedBtn').addEventListener('click', installGeneratedPlugin);
+  document.getElementById('builderPreview').addEventListener('input', () => {
+    document.getElementById('installGeneratedBtn').disabled = !document.getElementById('builderPreview').value.trim();
+  });
 
   // Toggle password buttons
   document.getElementById('toggleSpiderKey').addEventListener('click', () => {

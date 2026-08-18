@@ -18,15 +18,16 @@ export function hasAiKey(cfg: Config): boolean {
   return cfg.openaiApiKey.length > 0;
 }
 
-async function chatJson(
+export async function chatJson(
   cfg: Config,
   system: string,
   user: string,
   maxTokens = 1200
 ): Promise<string> {
   return chatJsonOnce(cfg, system, user, maxTokens, true).catch(async (err: Error) => {
-    // Some providers/models reject response_format (e.g. DeepSeek reasoner) — retry without it.
-    if (/\b400\b/.test(err.message) && err.message.includes("response_format")) {
+    // Some providers/models reject response_format (e.g. DeepSeek reasoner) and the
+    // error wording varies — retry without JSON mode on any 400, never on auth 401.
+    if (/\b400\b/.test(err.message) && !/\b401\b/.test(err.message)) {
       return chatJsonOnce(cfg, system, user, maxTokens, false);
     }
     throw err;
@@ -168,6 +169,28 @@ export function parseJsonObject(text: string): any {
 // Categorization
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Plugin-contributed rules (JSON plugins register keyword rules without code)
+// ---------------------------------------------------------------------------
+
+interface ExtraRule { match: RegExp; label: string }
+const EXTRA_CATEGORY_RULES: ExtraRule[] = [];
+const EXTRA_INTEREST_RULES: ExtraRule[] = [];
+const registeredRuleSets = new Set<string>();
+
+/** Register category/interest rules from a JSON plugin (idempotent per plugin id). */
+export function registerRuleSets(pluginId: string, rules: { categories?: { match: string; category: string }[]; interests?: { match: string; topic: string; confidence?: number }[] } | undefined): void {
+  if (!rules) return;
+  if (registeredRuleSets.has(pluginId)) return;
+  registeredRuleSets.add(pluginId);
+  for (const r of rules.categories ?? []) {
+    try { EXTRA_CATEGORY_RULES.push({ match: new RegExp(r.match, "i"), label: r.category }); } catch { /* bad regex ignored */ }
+  }
+  for (const r of rules.interests ?? []) {
+    try { EXTRA_INTEREST_RULES.push({ match: new RegExp(r.match, "i"), label: r.topic }); } catch { /* bad regex ignored */ }
+  }
+}
+
 const RULE_CATEGORIES: [RegExp, string, string][] = [
   [/\b(shopify|woocommerce|etsy|amazon|e-commerce|ecommerce|store|products?|cart)\b/i, "E-commerce / Retail", "storefront language"],
   [/\b(saas|software|cloud|platform|api|developer|app |app$|technology|tech |ai |machine learning|data)\b/i, "SaaS / Software", "technology language"],
@@ -215,6 +238,12 @@ export function extractInterestsByRules(texts: string[]): Interest[] {
       out.push({ topic, confidence: Math.min(0.4 + hits * 0.12, 0.85) });
     }
   }
+  for (const rule of EXTRA_INTEREST_RULES) {
+    const hits = (haystack.match(rule.match) ?? []).length;
+    if (hits > 0) {
+      out.push({ topic: rule.label, confidence: Math.min(0.5 + hits * 0.1, 0.8) });
+    }
+  }
   return out.sort((x, y) => y.confidence - x.confidence).slice(0, 8);
 }
 
@@ -224,6 +253,11 @@ export function categorizeByRules(texts: string[]): Categorization {
   for (const [re, cat, why] of RULE_CATEGORIES) {
     const hits = (haystack.match(re) ?? []).length;
     if (hits > 0 && (!best || hits > best[2])) best = [cat, why, hits];
+  }
+  // Plugin-contributed category rules (weighted equally with built-ins)
+  for (const rule of EXTRA_CATEGORY_RULES) {
+    const hits = (haystack.match(rule.match) ?? []).length;
+    if (hits > 0 && (!best || hits > best[2])) best = [rule.label, "plugin rule", hits];
   }
   const base = best
     ? {

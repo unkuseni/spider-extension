@@ -34,6 +34,8 @@
         <button class="tab" data-tab="search">Search</button>
         <button class="tab" data-tab="ai">AI Extract</button>
         <button class="tab" data-tab="leads">Leads</button>
+        <button class="tab" data-tab="career">Career</button>
+        <button class="tab" data-tab="assist">Assist</button>
       </nav>
     </header>
 
@@ -224,6 +226,7 @@
       <div class="btn-row">
         <button id="leadsHuntBtn" class="btn btn-primary">🎯 Hunt</button>
         <button id="leadsSearchBtn" class="btn btn-outline">🔍 Search web</button>
+        <button id="pluginsBadge" class="btn btn-sm btn-outline" title="Plugins">🧩 0 plugins</button>
       </div>
       <div class="btn-row">
         <button id="leadsVerifyBtn" class="btn btn-sm btn-outline">✅ Verify stored</button>
@@ -243,6 +246,72 @@
       <div id="leadsEmpty" class="empty-state">
         <div class="empty-icon">🎯</div>
         <p>Hunt a site or search the web to build your lead list.</p>
+      </div>
+    </section>
+
+
+    <!-- ─── Career Tab ─── -->
+    <section class="tab-content" id="tab-career">
+      <p class="section-desc">
+        Build a profile from your resume (PDF, DOCX, or TXT), tailor it to any job,
+        and draft outreach. <b>You review and send everything yourself</b> — drafts open
+        in your own mail app or clipboard. Your resume text is sent to your AI provider
+        (nowhere else). Needs an AI key (Settings).
+      </p>
+      <div class="form-group">
+        <label class="label">1 · Resume (PDF, DOCX, TXT)</label>
+        <input type="file" id="resumeFile" class="input" accept=".pdf,.docx,.txt,.md,.text" />
+        <textarea id="resumePaste" class="textarea" rows="4" placeholder="…or paste resume text here"></textarea>
+        <div class="btn-row">
+          <button id="buildProfileBtn" class="btn btn-primary">🧑 Build my profile</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="label">2 · Job posting</label>
+        <input type="text" id="jobTitle" class="input" placeholder="Job title (e.g. Senior Platform Engineer)" />
+        <input type="text" id="jobCompany" class="input" placeholder="Company (optional)" />
+        <textarea id="jobDescription" class="textarea" rows="5" placeholder="Paste the job description…"></textarea>
+      </div>
+      <div class="btn-row">
+        <button id="tailorBtn" class="btn btn-primary">✂️ Tailor resume + cover letter</button>
+        <button id="fitBtn" class="btn btn-outline">📊 Fit score</button>
+      </div>
+      <div class="btn-row">
+        <button id="emailDraftBtn" class="btn btn-outline">✉️ Email draft</button>
+        <button id="linkedinDraftBtn" class="btn btn-outline">💼 LinkedIn message</button>
+      </div>
+      <div id="careerOutput" class="career-output"></div>
+    </section>
+
+
+    <!-- ─── Assist Tab (approval-gated browser actions) ─── -->
+    <section class="tab-content" id="tab-assist">
+      <p class="section-desc">
+        The AI proposes actions on the <b>current tab</b>; you approve each one before it runs.
+        It never submits applications, sends messages, or logs in — those stay yours.
+      </p>
+      <div id="assistAllowlist" class="assist-allowlist">
+        <span class="muted">Allowlist:</span>
+        <span id="assistAllowChips"></span>
+        <button id="assistAllowSiteBtn" class="btn btn-sm btn-outline" title="Add the current site">＋ allow this site</button>
+      </div>
+      <div id="assistLog" class="assist-log"></div>
+      <div id="assistPending" class="assist-pending hidden">
+        <div class="assist-pending-title">⏳ Action needs your approval</div>
+        <div id="assistPendingBody" class="assist-pending-body"></div>
+        <div class="btn-row">
+          <button id="assistApproveBtn" class="btn btn-primary">✅ Approve</button>
+          <button id="assistDenyBtn" class="btn btn-danger">🚫 Deny</button>
+        </div>
+      </div>
+      <label class="checkbox-label" style="margin:4px 0">
+        <input type="checkbox" id="assistReadOnly" />
+        <span>Auto-approve read-only actions (navigate, read page, scroll, list tabs)</span>
+      </label>
+      <div class="form-row" style="margin-top:8px">
+        <input type="text" id="assistPrompt" class="input" placeholder="e.g. Fill the application form from my profile" />
+        <button id="assistSendBtn" class="btn btn-primary">▶</button>
+        <button id="assistStopBtn" class="btn btn-danger hidden" title="Stop the session">⏹</button>
       </div>
     </section>
 

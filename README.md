@@ -24,6 +24,19 @@ Scrape any page, crawl entire sites, search the web — powered by [Spider Cloud
   `search_web`, `extract_contacts`, `categorize_company`, `store_leads`, `verify_email`,
   `query_leads`. Requires a function-calling model (OpenAI, DeepSeek `deepseek-chat` /
   `deepseek-v4-flash`, Groq…).
+- **Career tab** — build a profile from your resume (**PDF/DOCX/TXT**, parsed locally),
+  tailor resume + cover letter to any job, get a fit score, and draft cold email (opens in your
+  mail app) or LinkedIn messages (copy & send yourself). The extension never auto-sends.
+- **AI plugin builder** — Options → Plugins → describe a plugin in plain language, the AI writes
+  the JSON, you review and install it.
+- **Assist tab (approval-gated browser control)** — the AI controls the browser: navigate,
+  open/close/activate/list tabs, fill application forms from your profile, set text, click
+  (non-submit), scroll, copy to clipboard. You approve each action before it runs (optionally
+  auto-approve read-only actions). It cannot submit, send, or log in — those stay yours.
+  Per-site allowlist, sensitive fields never auto-filled, stop button, full action log.
+- **Plugins (no-code)** — attach `.json` plugins in Options → **Plugins**: add AI agent tools
+  (built-in actions or custom HTTP calls), stream leads to webhooks, add interest/category rules,
+  and add export formats. No coding required; works in the CLI too (`plugins install`).
 
 ## Project layout
 
@@ -31,7 +44,7 @@ Scrape any page, crawl entire sites, search the web — powered by [Spider Cloud
 manifest.json      MV3 manifest (permissions incl. api.spider.cloud, Plunk, Turso, DeepSeek)
 background.js      service worker — side panel routing, quick actions
 popup/             quick Scrape / Crawl / Search + "Find Leads" button
-sidepanel/         full panel: Scrape, Crawl, Search, AI Extract, **Leads**
+sidepanel/         full panel: Scrape, Crawl, Search, AI Extract, **Leads**, Career, Assist
 options/           API keys (Spider, BYOK AI incl. DeepSeek endpoint), Turso + Plunk settings
 lib/               spider-api.js (Spider client), ai-client.js (BYOK AI),
                    leads.js (Lead Finder glue: storage → config → shared pipeline)
@@ -54,6 +67,19 @@ The extension and the [spider-leads CLI](spider-leads/README.md) share one pipel
      (or `deepseek-v4-flash` for function-calling agent mode)
    - Lead Finder: **Turso URL + token** (free at turso.tech) and **Plunk API key** (sk_*)
 3. Open the side panel (Ctrl+Shift+Z) → **Leads** tab → enter target domains → **Hunt**.
+
+## Browsers
+
+**Chrome** (primary), **Firefox** (WebExtensions MV3), and **Safari** (via the converter).
+
+- Firefox: `npm run build:firefox` → `dist/firefox/` (web-ext lint: 0 errors). Panel opens in
+  a tab (no sidePanel API). See the Firefox section below.
+- Safari: `npm run build:safari` → `dist/safari/`, then on macOS run
+  `xcrun safari-web-extension-converter dist/safari --app-name "Spider"` and build the Xcode
+  project. Safari compatibility is handled in code: `lib/storage.js` falls back from
+  `storage.sync` to `storage.local` (Safari has no sync storage), the panel opens in a tab,
+  runtime host permissions are skipped (all hosts declared up front), and `chrome.scripting`
+  is feature-detected. See `dist/safari/SAFARI.md`.
 
 ## Firefox
 
@@ -80,17 +106,32 @@ promise-based `chrome.*` APIs). The build script copies only extension files —
 
 ## Rebuilding the shared pipeline bundle
 
-Only needed if you change `spider-leads/src/*.ts`:
+The browser bundles are **generated** (gitignored) — a fresh clone needs:
 
 ```bash
-npm install          # dev deps (esbuild, @libsql/client)
-npm run build:vendor # → vendor/leads-core.js
+npm install
+npm run build:vendor   # spider-leads/src/*.ts → vendor/leads-core.js
+npm run build:pdf      # pdf.js → vendor/pdf-extract.js + vendor/pdf.worker.mjs
+npm run build:firefox  # → dist/firefox/
+npm run build:safari   # → dist/safari/
+npm test               # 31 tests: unit (helpers/storage/plugins) + integration
+                       # (hunt, search, agent loop, career, assist loop, verify,
+                       #  plugin http tools & webhooks — all against the mock API,
+                       #  no real keys or network needed)
 ```
 
-Then reload the extension.
+Then reload the extension. Re-run `build:vendor` whenever you change
+`spider-leads/src/*.ts`, `build:pdf` when PDF handling changes.
 
 ## Notes
 
+- **Keys are stored in plaintext** in the browser's extension storage (synced via your
+  browser account where supported). Anyone with device access could read them — treat
+  them like passwords. The extension never sends them anywhere except their own provider.
+- Your **resume text is sent to your configured AI provider** when you build a profile
+  (Career tab) — it goes nowhere else. Pick a provider you trust.
+- The DOCX resume parser reads `word/document.xml` (main body); headers/footers and encrypted
+  documents aren't extracted — paste the text for those.
 - Turso URLs are normalized `libsql://…` → `https://…` in the extension so the browser
   client uses Hrana over HTTPS (no WebSocket host permission needed). Custom Turso domains
   must be added to `host_permissions` in the manifest.

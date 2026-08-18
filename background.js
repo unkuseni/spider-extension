@@ -1,3 +1,5 @@
+import { storageGet, storageSet } from './lib/storage.js';
+
 /**
  * Spider Extension — Background Service Worker (Manifest V3)
  *
@@ -39,8 +41,16 @@ async function openPanelUi(tab) {
     await chrome.sidePanel.open({ windowId: tab.windowId });
     return;
   }
-  // Firefox fallback: the panel page works standalone in a tab
+  // Firefox/Safari fallback: the panel page works standalone in a tab.
+  // Reuse an existing panel tab when one is open.
   const url = chrome.runtime.getURL('sidepanel/sidepanel.html');
+  try {
+    const existing = (await chrome.tabs.query({ url }))[0];
+    if (existing) {
+      await chrome.tabs.update(existing.id, { active: true });
+      return;
+    }
+  } catch { /* query may fail on some browsers — fall through */ }
   await chrome.tabs.create({ url, active: true });
 }
 
@@ -107,11 +117,11 @@ async function handleMessage(message, sender) {
     // API key
     // ---------------------------------------------------------------
     case 'getApiKey': {
-      const result = await chrome.storage.sync.get(['spider_api_key']);
+      const result = await storageGet(['spider_api_key']);
       return { apiKey: result.spider_api_key || null };
     }
     case 'setApiKey': {
-      await chrome.storage.sync.set({ spider_api_key: message.apiKey });
+      await storageSet({ spider_api_key: message.apiKey });
       return { ok: true };
     }
 
@@ -119,12 +129,12 @@ async function handleMessage(message, sender) {
     // Preferences
     // ---------------------------------------------------------------
     case 'getPrefs': {
-      const result = await chrome.storage.sync.get(['spider_prefs']);
+      const result = await storageGet(['spider_prefs']);
       return { prefs: result.spider_prefs || {} };
     }
     case 'setPrefs': {
-      const existing = (await chrome.storage.sync.get(['spider_prefs'])).spider_prefs || {};
-      await chrome.storage.sync.set({ spider_prefs: { ...existing, ...message.prefs } });
+      const existing = (await storageGet(['spider_prefs'])).spider_prefs || {};
+      await storageSet({ spider_prefs: { ...existing, ...message.prefs } });
       return { ok: true };
     }
 
@@ -132,12 +142,12 @@ async function handleMessage(message, sender) {
     // AI keys (BYOK)
     // ---------------------------------------------------------------
     case 'getAiKeys': {
-      const result = await chrome.storage.sync.get(['spider_ai_keys']);
+      const result = await storageGet(['spider_ai_keys']);
       return { aiKeys: result.spider_ai_keys || {} };
     }
     case 'setAiKeys': {
-      const existing = (await chrome.storage.sync.get(['spider_ai_keys'])).spider_ai_keys || {};
-      await chrome.storage.sync.set({ spider_ai_keys: { ...existing, ...message.aiKeys } });
+      const existing = (await storageGet(['spider_ai_keys'])).spider_ai_keys || {};
+      await storageSet({ spider_ai_keys: { ...existing, ...message.aiKeys } });
       return { ok: true };
     }
 

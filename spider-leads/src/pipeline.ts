@@ -13,6 +13,8 @@ import { classifyEmailType, filterContactUrls, isValidEmail, domainOf, emailName
 import { categorizeDomain, parseContacts } from "./ai.ts";
 import { verifyBatch } from "./plunk.ts";
 import { initSchema, openDb, recordRun, recordVerification, upsertLead, unverifiedEmails } from "./db.ts";
+import { fireHook } from "./hooks.ts";
+import type { Plugin } from "./types.ts";
 import { log } from "./log.ts";
 
 export interface RunOptions {
@@ -24,6 +26,8 @@ export interface RunOptions {
   dryRun: boolean;
   urlFilter?: string;
   concurrency: number;
+  /** Loaded plugins — their hooks fire around/inside the run. */
+  plugins?: Plugin[];
 }
 
 export const defaultRunOptions = (cfg: Config): RunOptions => ({
@@ -204,6 +208,9 @@ async function storeAndVerify(
     } else {
       summary.leadsUpdated++;
     }
+    if (opts.plugins && opts.plugins.length > 0) {
+      await fireHook(opts.plugins, "onLead", { lead, outcome }, summary.errors);
+    }
   }
 
   if (opts.verify && !opts.dryRun && freshEmails.length > 0) {
@@ -245,6 +252,9 @@ async function huntOne(
   const rootUrl = toRootUrl(target);
   const domain = domainOf(rootUrl);
   log.step("Hunting " + domain);
+  if (opts.plugins && opts.plugins.length > 0) {
+    await fireHook(opts.plugins, "beforeRun", { source: "hunt", target: domain }, summary.errors);
+  }
 
   // 1-4) Links → filter → scrape → extract (shared with the agent tools)
   const extraction = await extractContactsFromSite(cfg, target, opts);
@@ -275,6 +285,9 @@ async function huntOne(
     leadsFound: summary.leadsFound, verified: summary.leadsVerified,
     invalid: summary.leadsInvalid, errors: summary.errors,
   });
+  if (opts.plugins && opts.plugins.length > 0) {
+    await fireHook(opts.plugins, "afterRun", { summary }, summary.errors);
+  }
   return summary;
 }
 
@@ -354,6 +367,9 @@ export async function huntSearch(
   requireSpiderKey(cfg);
   const summary = emptyRun(query, "search");
   const startedAt = new Date().toISOString();
+  if (opts.plugins && opts.plugins.length > 0) {
+    await fireHook(opts.plugins, "beforeRun", { source: "search", target: query }, summary.errors);
+  }
 
   log.step("Searching: " + query);
   const pages = await searchPages(cfg, query, { limit: opts.limit, mode: opts.mode });
@@ -388,6 +404,9 @@ export async function huntSearch(
     invalid: summary.leadsInvalid,
     errors: summary.errors,
   });
+  if (opts.plugins && opts.plugins.length > 0) {
+    await fireHook(opts.plugins, "afterRun", { summary }, summary.errors);
+  }
   return summary;
 }
 

@@ -1,0 +1,58 @@
+{
+  "id": "jobs-board-json",
+  "name": "Jobs Board (No-Code)",
+  "version": "0.2.0",
+  "description": "JSON-only example: adds a fetch_jobs agent tool, streams new leads to a webhook, tags an Open Source interest, and provides a JSONL exporter. No code required.",
+  "tools": [
+    {
+      "name": "fetch_jobs",
+      "description": "Fetch current job openings from a company's public Greenhouse board. Returns title, location, apply URL.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "company": {
+            "type": "string",
+            "description": "Company slug (e.g. airbnb)"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Max jobs (default 5)"
+          }
+        },
+        "required": [
+          "company"
+        ]
+      },
+      "action": {
+        "type": "builtin",
+        "id": "fetch_jobs",
+        "params": {
+          "platform": "greenhouse"
+        }
+      }
+    }
+  ],
+  "hooks": {
+    "onLead": {
+      "url": "https://example.com/api/new-lead",
+      "method": "POST",
+      "bodyTemplate": "{\"event\":\"lead\",\"email\":\"{email}\",\"company\":\"{company}\",\"outcome\":\"{outcome}\"}"
+    }
+  },
+  "rules": {
+    "interests": [
+      {
+        "match": "open source|github|oss|mit license",
+        "topic": "Open Source",
+        "confidence": 0.75
+      }
+    ]
+  },
+  "exporters": [
+    {
+      "id": "jsonl",
+      "label": "JSON Lines",
+      "format": "jsonl"
+    }
+  ]
+}

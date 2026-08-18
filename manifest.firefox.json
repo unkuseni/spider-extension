@@ -20,7 +20,8 @@
   "permissions": [
     "activeTab",
     "storage",
-    "scripting"
+    "scripting",
+    "tabs"
   ],
   "host_permissions": [
     "https://api.spider.cloud/*",
@@ -30,7 +31,13 @@
     "https://api.deepseek.com/*",
     "https://next-api.useplunk.com/*",
     "https://*.turso.io/*",
-    "http://localhost:*/*"
+    "http://localhost:*/*",
+    "https://*.linkedin.com/*",
+    "https://*.greenhouse.io/*",
+    "https://*.lever.co/*",
+    "https://*.ashbyhq.com/*",
+    "https://*.indeed.com/*",
+    "https://*.workday.com/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",
@@ -72,5 +79,9 @@
       },
       "description": "Open Spider side panel"
     }
-  }
+  },
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ]
 }

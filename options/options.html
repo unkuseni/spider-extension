@@ -250,6 +250,66 @@
       </div>
     </section>
 
+    <!-- ─── Plugins ─── -->
+    <section class="card">
+      <h2 class="section-title">
+        <span class="section-icon">🧩</span>
+        Plugins
+      </h2>
+      <p class="section-desc">
+        Attach plugins to extend the Lead Finder — no coding needed. A plugin is a
+        <b>.json</b> file that can add AI agent tools (e.g. job-board lookups, custom
+        APIs), send every new lead to a webhook, add interest/category rules, and add
+        export formats. Get plugin files from your team, a marketplace, or write your
+        own — <a href="#" id="pluginFormatLink">see the format</a>.
+      </p>
+      <div class="form-group">
+        <label class="label">Attach a plugin file</label>
+        <div class="input-row">
+          <input type="file" id="pluginFileInput" class="input" accept=".json,application/json" />
+          <button id="installPluginFileBtn" class="btn btn-primary" type="button">Attach</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="label">…or paste plugin JSON</label>
+        <textarea id="pluginPaste" class="textarea" rows="4" placeholder='{ "id": "my-plugin", "name": "My Plugin", "version": "1.0.0", "tools": [], "hooks": {}, "rules": {}, "exporters": [] }'></textarea>
+        <button id="installPluginPasteBtn" class="btn btn-primary" style="margin-top:6px" type="button">Install pasted plugin</button>
+      </div>
+      <div id="pluginStatus" class="status-msg"></div>
+      <div id="installedPlugins" class="installed-plugins"></div>
+
+      <hr style="border-color:var(--border);margin:14px 0">
+      <h3 class="section-title" style="font-size:14px">🤖 Generate a plugin with AI</h3>
+      <p class="section-desc">
+        Describe what you want in plain language and the AI writes the plugin JSON for you.
+        Review it, then install — no coding needed.
+      </p>
+      <div class="form-row">
+        <div class="form-group flex-3">
+          <label class="label" for="builderProvider">AI provider</label>
+          <select id="builderProvider" class="select">
+            <option value="openai">OpenAI / DeepSeek endpoint</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="gemini">Gemini</option>
+            <option value="ollama">Ollama (local)</option>
+          </select>
+        </div>
+        <div class="form-group flex-3">
+          <label class="label" for="builderPrompt">Describe the plugin</label>
+          <input type="text" id="builderPrompt" class="input"
+            placeholder="e.g. a tool that checks a company's latest news before outreach, and a webhook that posts new leads to Slack" />
+        </div>
+        <div class="form-group flex-1 btn-end" style="justify-content:flex-end">
+          <button id="generatePluginBtn" class="btn btn-primary" style="margin-top:18px">Generate</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="label">Generated plugin (review / edit, then install)</label>
+        <textarea id="builderPreview" class="textarea" rows="9" placeholder="The generated plugin JSON will appear here…"></textarea>
+        <button id="installGeneratedBtn" class="btn btn-primary" style="margin-top:6px" disabled>Install generated plugin</button>
+      </div>
+    </section>
+
     <!-- ─── About ─── -->
     <section class="card about-section">
       <h2 class="section-title">About</h2>

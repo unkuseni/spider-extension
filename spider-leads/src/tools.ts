@@ -21,7 +21,7 @@ export interface Tool {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  run: (args: any) => Promise<string>;
+  run: (args: any, ctx?: { cfg?: unknown; db?: unknown }) => Promise<string>;
 }
 
 function def(t: Tool): ToolDef {

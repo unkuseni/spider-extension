@@ -1,0 +1,6 @@
+{
+  "id": "exporter-jsonl",
+  "name": "JSONL Exporter",
+  "version": "0.1.0",
+  "description": "Export leads as JSON Lines (one JSON object per line) via: export out.jsonl --exporter jsonl"
+}

@@ -486,7 +486,7 @@ function hasAiKey(cfg) {
 }
 async function chatJson(cfg, system, user, maxTokens = 1200) {
   return chatJsonOnce(cfg, system, user, maxTokens, true).catch(async (err) => {
-    if (/\b400\b/.test(err.message) && err.message.includes("response_format")) {
+    if (/\b400\b/.test(err.message) && !/\b401\b/.test(err.message)) {
       return chatJsonOnce(cfg, system, user, maxTokens, false);
     }
     throw err;
@@ -581,6 +581,26 @@ function parseJsonObject(text) {
   }
   throw new Error("AI returned no parseable JSON: " + text.slice(0, 200));
 }
+var EXTRA_CATEGORY_RULES = [];
+var EXTRA_INTEREST_RULES = [];
+var registeredRuleSets = /* @__PURE__ */ new Set();
+function registerRuleSets(pluginId, rules) {
+  if (!rules) return;
+  if (registeredRuleSets.has(pluginId)) return;
+  registeredRuleSets.add(pluginId);
+  for (const r of rules.categories ?? []) {
+    try {
+      EXTRA_CATEGORY_RULES.push({ match: new RegExp(r.match, "i"), label: r.category });
+    } catch {
+    }
+  }
+  for (const r of rules.interests ?? []) {
+    try {
+      EXTRA_INTEREST_RULES.push({ match: new RegExp(r.match, "i"), label: r.topic });
+    } catch {
+    }
+  }
+}
 var RULE_CATEGORIES = [
   [/\b(shopify|woocommerce|etsy|amazon|e-commerce|ecommerce|store|products?|cart)\b/i, "E-commerce / Retail", "storefront language"],
   [/\b(saas|software|cloud|platform|api|developer|app |app$|technology|tech |ai |machine learning|data)\b/i, "SaaS / Software", "technology language"],
@@ -626,6 +646,12 @@ function extractInterestsByRules(texts) {
       out.push({ topic, confidence: Math.min(0.4 + hits * 0.12, 0.85) });
     }
   }
+  for (const rule of EXTRA_INTEREST_RULES) {
+    const hits = (haystack.match(rule.match) ?? []).length;
+    if (hits > 0) {
+      out.push({ topic: rule.label, confidence: Math.min(0.5 + hits * 0.1, 0.8) });
+    }
+  }
   return out.sort((x, y) => y.confidence - x.confidence).slice(0, 8);
 }
 function categorizeByRules(texts) {
@@ -634,6 +660,10 @@ function categorizeByRules(texts) {
   for (const [re, cat, why] of RULE_CATEGORIES) {
     const hits = (haystack.match(re) ?? []).length;
     if (hits > 0 && (!best || hits > best[2])) best = [cat, why, hits];
+  }
+  for (const rule of EXTRA_CATEGORY_RULES) {
+    const hits = (haystack.match(rule.match) ?? []).length;
+    if (hits > 0 && (!best || hits > best[2])) best = [rule.label, "plugin rule", hits];
   }
   const base = best ? {
     category: best[0],
@@ -5735,6 +5765,21 @@ async function recordRun(db, run) {
   });
 }
 
+// spider-leads/src/hooks.ts
+async function fireHook(plugins, hook, ctx, errors) {
+  for (const p of plugins) {
+    const fn = (p.hooks ?? {})[hook];
+    if (typeof fn !== "function") continue;
+    try {
+      await fn(ctx);
+    } catch (err) {
+      const msg = "plugin " + p.id + " hook " + hook + ": " + err.message;
+      errors.push(msg);
+      log.warn(msg);
+    }
+  }
+}
+
 // spider-leads/src/pipeline.ts
 var defaultRunOptions = (cfg) => ({
   limit: cfg.crawlLimit,
@@ -5879,6 +5924,9 @@ async function storeAndVerify(db, cfg, domain, company, cat, contacts, pages, op
     } else {
       summary.leadsUpdated++;
     }
+    if (opts.plugins && opts.plugins.length > 0) {
+      await fireHook(opts.plugins, "onLead", { lead, outcome }, summary.errors);
+    }
   }
   if (opts.verify && !opts.dryRun && freshEmails.length > 0) {
     if (!cfg.plunkApiKey) {
@@ -5906,6 +5954,9 @@ async function huntOne(db, cfg, target, opts) {
   const rootUrl = toRootUrl(target);
   const domain = domainOf(rootUrl);
   log.step("Hunting " + domain);
+  if (opts.plugins && opts.plugins.length > 0) {
+    await fireHook(opts.plugins, "beforeRun", { source: "hunt", target: domain }, summary.errors);
+  }
   const extraction = await extractContactsFromSite(cfg, target, opts);
   summary.errors.push(...extraction.errors);
   summary.pagesCrawled += extraction.pages.length;
@@ -5942,6 +5993,9 @@ async function huntOne(db, cfg, target, opts) {
     invalid: summary.leadsInvalid,
     errors: summary.errors
   });
+  if (opts.plugins && opts.plugins.length > 0) {
+    await fireHook(opts.plugins, "afterRun", { summary }, summary.errors);
+  }
   return summary;
 }
 async function extractContactsFromSite(cfg, target, opts) {
@@ -5987,6 +6041,9 @@ async function huntSearch(db, cfg, query, opts) {
   requireSpiderKey(cfg);
   const summary = emptyRun(query, "search");
   const startedAt = (/* @__PURE__ */ new Date()).toISOString();
+  if (opts.plugins && opts.plugins.length > 0) {
+    await fireHook(opts.plugins, "beforeRun", { source: "search", target: query }, summary.errors);
+  }
   log.step("Searching: " + query);
   const pages = await searchPages(cfg, query, { limit: opts.limit, mode: opts.mode });
   summary.pagesCrawled = pages.length;
@@ -6016,6 +6073,9 @@ async function huntSearch(db, cfg, query, opts) {
     invalid: summary.leadsInvalid,
     errors: summary.errors
   });
+  if (opts.plugins && opts.plugins.length > 0) {
+    await fireHook(opts.plugins, "afterRun", { summary }, summary.errors);
+  }
   return summary;
 }
 async function verifyStored(db, cfg, opts) {
@@ -6310,6 +6370,19 @@ function countToolCalls(calls) {
 async function runAgent(db, cfg, objective, opts = {}) {
   const maxTurns = opts.maxTurns ?? 20;
   const tools = buildTools(cfg, db, { dryRun: opts.dryRun, limit: opts.limit });
+  for (const pt of opts.extraTools ?? []) {
+    if (!pt || typeof pt.name !== "string" || !pt.name) continue;
+    if (tools[pt.name]) {
+      log.warn("Plugin tool '" + pt.name + "' collides with a built-in tool \u2014 skipping");
+      continue;
+    }
+    tools[pt.name] = {
+      name: pt.name,
+      description: pt.description,
+      parameters: pt.parameters,
+      run: (args, ctx) => Promise.resolve(pt.run(args, ctx))
+    };
+  }
   const defs = toolDefs(tools);
   const calls = /* @__PURE__ */ new Map();
   const errors = [];
@@ -6318,11 +6391,11 @@ async function runAgent(db, cfg, objective, opts = {}) {
     { role: "user", content: objective }
   ];
   let final = "";
-  let turns = 0;
+  let rounds = 0;
   let stored = 0, updated = 0, verified = 0, invalid = 0;
-  let lastResp;
-  for (; turns < maxTurns; turns++) {
-    log.step("Agent turn " + (turns + 1) + "/" + maxTurns);
+  for (let round = 0; round < maxTurns; round++) {
+    rounds = round + 1;
+    log.step("Agent turn " + rounds + "/" + maxTurns);
     let resp;
     try {
       resp = await chatWithTools(cfg, messages, defs);
@@ -6336,13 +6409,12 @@ async function runAgent(db, cfg, objective, opts = {}) {
       }
       break;
     }
-    lastResp = resp;
     if (resp.toolCalls.length === 0) {
       final = resp.content || "(no summary returned)";
       break;
     }
     for (const call of resp.toolCalls) {
-      const result = await executeToolCall(tools, call, calls, errors);
+      const result = await executeToolCall(tools, call, calls, errors, cfg, db);
       messages.push({
         role: "assistant",
         content: null,
@@ -6372,15 +6444,13 @@ async function runAgent(db, cfg, objective, opts = {}) {
         }
       }
     }
-    if (turns === maxTurns - 1) {
-      final = "(turn budget reached)";
-    }
   }
+  if (!final) final = "(turn budget reached after " + rounds + " rounds)";
   log.info("Agent finished: " + final.slice(0, 200));
   return {
     objective,
     final,
-    turns: turns + (lastResp ? 1 : 0),
+    turns: rounds,
     toolCalls: countToolCalls(calls),
     stored,
     updated,
@@ -6389,7 +6459,7 @@ async function runAgent(db, cfg, objective, opts = {}) {
     errors
   };
 }
-async function executeToolCall(tools, call, calls, errors) {
+async function executeToolCall(tools, call, calls, errors, cfg, db) {
   calls.set(call.name, (calls.get(call.name) ?? 0) + 1);
   const tool = tools[call.name];
   if (!tool) {
@@ -6399,7 +6469,7 @@ async function executeToolCall(tools, call, calls, errors) {
   }
   log.info("  \u2192 " + call.name + " " + JSON.stringify(call.args ?? {}).slice(0, 160));
   try {
-    return await tool.run(call.args ?? {});
+    return await tool.run(call.args ?? {}, { cfg, db });
   } catch (err) {
     const msg = call.name + ": " + err.message;
     errors.push(msg);
@@ -6407,16 +6477,360 @@ async function executeToolCall(tools, call, calls, errors) {
     return JSON.stringify({ error: msg });
   }
 }
+
+// spider-leads/src/json-plugin.ts
+function isAllowedExternalUrl(url) {
+  const u = url.trim();
+  if (!/^https:\/\//i.test(u)) {
+    return /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])/i.test(u);
+  }
+  return true;
+}
+function pluginDataUrls(manifest) {
+  const urls = [];
+  if (manifest.hooks?.onLead?.url) urls.push(manifest.hooks.onLead.url);
+  if (manifest.hooks?.afterRun?.url) urls.push(manifest.hooks.afterRun.url);
+  for (const t of manifest.tools ?? []) {
+    if (t.action?.type === "http" && typeof t.action.url === "string") urls.push(t.action.url);
+  }
+  return [...new Set(urls)];
+}
+function validateJsonPlugin(text) {
+  if (typeof text !== "string" || text.trim().length === 0) {
+    return { ok: false, error: "Plugin must be a JSON string" };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { ok: false, error: "Not valid JSON: " + (text.length > 80 ? text.slice(0, 80) + "\u2026" : text) };
+  }
+  const m = parsed;
+  if (typeof m !== "object" || m === null) return { ok: false, error: "Plugin must be a JSON object" };
+  if (!m.id || typeof m.id !== "string") return { ok: false, error: "Missing 'id' (string)" };
+  if (!/^[a-z0-9][a-z0-9-_.]{0,63}$/.test(m.id)) return { ok: false, error: "'id' must be lowercase alphanumeric with dashes (e.g. my-plugin)" };
+  if (!m.name || typeof m.name !== "string") return { ok: false, error: "Missing 'name' (string)" };
+  if (!m.version || typeof m.version !== "string") return { ok: false, error: "Missing 'version' (string)" };
+  if (m.tools !== void 0 && !Array.isArray(m.tools)) return { ok: false, error: "'tools' must be an array" };
+  if (m.exporters !== void 0 && !Array.isArray(m.exporters)) return { ok: false, error: "'exporters' must be an array" };
+  const bad = pluginDataUrls(m).filter((u) => !isAllowedExternalUrl(u));
+  if (bad.length > 0) {
+    return { ok: false, error: "plugin sends data to non-HTTPS URL(s): " + bad.slice(0, 3).join(", ") + " (only https:// or localhost are allowed)" };
+  }
+  return { ok: true, manifest: m };
+}
+function substitute(template, vars) {
+  return template.replace(/\{([a-zA-Z0-9_.]+)\}/g, (_, key) => vars[key] ?? "");
+}
+function getPath(obj, path) {
+  let cur = obj;
+  for (const part of path.split(".")) {
+    if (cur === null || cur === void 0 || typeof cur !== "object") return void 0;
+    cur = cur[part];
+  }
+  return cur;
+}
+async function builtinFetchUrl(cfg, args) {
+  const url = String(args.url ?? "");
+  if (!url) return JSON.stringify({ error: "url is required" });
+  if (!cfg?.spiderApiKey) return JSON.stringify({ error: "Spider API key not configured \u2014 fetch_url needs it" });
+  try {
+    const page = await scrapePage(cfg, url, { mode: "smart" });
+    return JSON.stringify({ url: page.url, status: page.status, content: page.markdown.slice(0, 4e3) });
+  } catch (err) {
+    return JSON.stringify({ error: err.message });
+  }
+}
+async function builtinSearchWeb(cfg, args) {
+  const query = String(args.query ?? "");
+  if (!query) return JSON.stringify({ error: "query is required" });
+  if (!cfg?.spiderApiKey) return JSON.stringify({ error: "Spider API key not configured \u2014 search_web needs it" });
+  try {
+    const pages = await searchPages(cfg, query, { limit: Math.min(Number(args.limit) || 5, 20) });
+    return JSON.stringify({
+      count: pages.length,
+      results: pages.map((p) => ({ url: p.url, status: p.status, preview: p.markdown.replace(/\s+/g, " ").trim().slice(0, 300) }))
+    });
+  } catch (err) {
+    return JSON.stringify({ error: err.message });
+  }
+}
+async function builtinFetchJobs(args) {
+  const company = String(args.company ?? "");
+  const platform = String(args.platform ?? "");
+  const limit = Math.min(Number(args.limit) || 10, 50);
+  if (!company) return JSON.stringify({ error: "company is required" });
+  const out = [];
+  try {
+    if (platform === "greenhouse") {
+      const res = await fetch("https://boards-api.greenhouse.io/v1/boards/" + encodeURIComponent(company) + "/jobs");
+      if (!res.ok) return JSON.stringify({ error: "greenhouse: HTTP " + res.status });
+      const data = await res.json();
+      for (const j of (Array.isArray(data.jobs) ? data.jobs : []).slice(0, limit)) {
+        out.push({ title: j.title, location: j.location?.name ?? null, url: j.absolute_url, updated: j.updated_at });
+      }
+    } else if (platform === "lever") {
+      const res = await fetch("https://api.lever.co/v0/postings/" + encodeURIComponent(company) + "?mode=json");
+      if (!res.ok) return JSON.stringify({ error: "lever: HTTP " + res.status });
+      const data = await res.json();
+      for (const p of (Array.isArray(data) ? data : []).slice(0, limit)) {
+        out.push({ title: p.text, location: p.categories?.location ?? null, url: p.hostedUrl, updated: p.createdAt });
+      }
+    } else if (platform === "ashby") {
+      const res = await fetch("https://api.ashbyhq.com/posting-api/job-board/" + encodeURIComponent(company), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}"
+      });
+      if (!res.ok) return JSON.stringify({ error: "ashby: HTTP " + res.status });
+      const data = await res.json();
+      for (const j of (Array.isArray(data.jobs) ? data.jobs : []).slice(0, limit)) {
+        out.push({ title: j.title, location: j.location ?? null, url: j.jobUrl, updated: j.publishedAt });
+      }
+    } else {
+      return JSON.stringify({ error: "platform must be greenhouse | lever | ashby" });
+    }
+    return JSON.stringify({ count: out.length, jobs: out });
+  } catch (err) {
+    return JSON.stringify({ error: err.message });
+  }
+}
+function makeHttpTool(tool) {
+  const action = tool.action;
+  return {
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.parameters,
+    async run(args) {
+      const vars = {};
+      for (const [k, v] of Object.entries(args ?? {})) vars[k] = String(v ?? "");
+      const url = substitute(action.url, vars);
+      const method = (action.method ?? "GET").toUpperCase();
+      const headers = { ...action.headers ?? {} };
+      if (action.body !== void 0 && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+      const body = action.body !== void 0 ? JSON.stringify(substituteJson(action.body, vars)) : void 0;
+      try {
+        const resp = await fetch(url, { method, headers, body });
+        const text = await resp.text();
+        if (!resp.ok) return JSON.stringify({ error: "HTTP " + resp.status + ": " + text.slice(0, 200) });
+        let parsed = text;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+        }
+        const extracted = action.extract ? getPath(parsed, action.extract) : parsed;
+        return typeof extracted === "string" ? extracted : JSON.stringify(extracted ?? null);
+      } catch (err) {
+        return JSON.stringify({ error: err.message });
+      }
+    }
+  };
+}
+function substituteJson(value, vars) {
+  if (typeof value === "string") return substitute(value, vars);
+  if (Array.isArray(value)) return value.map((v) => substituteJson(v, vars));
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = substituteJson(v, vars);
+    return out;
+  }
+  return value;
+}
+function makeTool(cfg, tool) {
+  const action = tool.action;
+  if (action.type === "http") return makeHttpTool(tool);
+  const builtin = action.id;
+  const params = { ...action.params ?? {} };
+  return {
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.parameters,
+    async run(args) {
+      const merged = { ...params, ...args ?? {} };
+      if (builtin === "fetch_url") return builtinFetchUrl(cfg, merged);
+      if (builtin === "search_web") return builtinSearchWeb(cfg, merged);
+      if (builtin === "fetch_jobs") return builtinFetchJobs(merged);
+      return JSON.stringify({ error: "unknown builtin action: " + builtin });
+    }
+  };
+}
+function makeWebhookHook(def2) {
+  return async (ctx) => {
+    const lead = ctx.lead ?? {};
+    const vars = {
+      email: String(lead.email ?? ""),
+      company: String(lead.company ?? ""),
+      title: String(lead.title ?? ""),
+      outcome: String(ctx.outcome ?? ""),
+      source: String(lead.source ?? ""),
+      domain: String(lead.domain ?? "")
+    };
+    const body = def2.bodyTemplate ? substitute(def2.bodyTemplate, vars) : JSON.stringify({ event: "lead", outcome: ctx.outcome ?? "", lead });
+    try {
+      await fetch(def2.url, {
+        method: def2.method ?? "POST",
+        headers: { "Content-Type": "application/json", ...def2.headers ?? {} },
+        body
+      });
+    } catch (err) {
+      log.warn("plugin webhook to " + def2.url + " failed: " + err.message);
+    }
+  };
+}
+function makeExporter(def2) {
+  return {
+    id: def2.id,
+    label: def2.label ?? def2.id,
+    export(rows) {
+      if (def2.format === "jsonl") {
+        return { content: rows.map((r) => JSON.stringify(r)).join("\n") + "\n", filename: "leads.jsonl", mime: "application/x-ndjson" };
+      }
+      if (def2.format === "json") {
+        return { content: JSON.stringify(rows, null, 2) + "\n", filename: "leads.json", mime: "application/json" };
+      }
+      const cols = def2.columns ?? (rows[0] ? Object.keys(rows[0]) : []);
+      const esc = (v) => {
+        const str = String(v ?? "");
+        return /[",\n]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
+      };
+      const lines = [cols.map(esc).join(","), ...rows.map((r) => cols.map((c2) => esc(r[c2])).join(","))];
+      return { content: lines.join("\n") + "\n", filename: "leads.csv", mime: "text/csv" };
+    }
+  };
+}
+function compileJsonPlugin(manifest, cfg) {
+  const hooks = {};
+  if (manifest.hooks?.onLead) hooks.onLead = makeWebhookHook(manifest.hooks.onLead);
+  if (manifest.hooks?.afterRun) hooks.afterRun = makeWebhookHook(manifest.hooks.afterRun);
+  registerRuleSets(manifest.id, manifest.rules);
+  return {
+    id: manifest.id,
+    name: manifest.name,
+    version: manifest.version,
+    description: manifest.description ?? "",
+    dir: "json",
+    entry: "plugin.json",
+    tools: (manifest.tools ?? []).map((t) => makeTool(cfg, t)),
+    hooks,
+    exporters: (manifest.exporters ?? []).map(makeExporter),
+    filters: manifest.filters
+  };
+}
+
+// spider-leads/src/career.ts
+function asStr(v, fallback = "") {
+  return typeof v === "string" ? v : fallback;
+}
+function asNum(v, fallback) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.min(Math.max(n, 0), 100) : fallback;
+}
+async function buildProfile(cfg, resumeText, extraContext = "") {
+  const fallback = {
+    fullName: "",
+    title: "",
+    summary: "",
+    skills: [],
+    experience: [],
+    education: [],
+    projects: []
+  };
+  if (!hasAiKey(cfg)) {
+    log.warn("No AI key configured \u2014 profile will only contain the raw resume text");
+    return { ...fallback, raw: resumeText.slice(0, 2e4) };
+  }
+  const system = 'You extract structured professional profiles from resumes. Return ONLY JSON matching this exact schema: {"fullName": string, "title": string, "summary": string, "contact": {"email": string, "phone": string, "linkedin": string, "location": string, "website": string}, "skills": string[], "experience": [{"role": string, "company": string, "period": string, "highlights": string[]}], "education": [{"degree": string, "school": string, "period": string}], "projects": [{"name": string, "description": string, "link": string}], "certifications": string[], "languages": string[]}. Keep every fact exactly as written in the resume. NEVER invent skills, employers, or dates. Use null/empty arrays for anything not present.';
+  const user = "RESUME:\n" + resumeText.slice(0, 3e4) + (extraContext ? "\n\nEXTRA CONTEXT:\n" + extraContext.slice(0, 3e3) : "");
+  try {
+    const json = parseJsonObject(await chatJson(cfg, system, user, 3e3));
+    return {
+      fullName: asStr(json.fullName) || void 0,
+      title: asStr(json.title) || void 0,
+      summary: asStr(json.summary) || void 0,
+      contact: json.contact && typeof json.contact === "object" ? {
+        email: asStr(json.contact.email) || void 0,
+        phone: asStr(json.contact.phone) || void 0,
+        linkedin: asStr(json.contact.linkedin) || void 0,
+        location: asStr(json.contact.location) || void 0,
+        website: asStr(json.contact.website) || void 0
+      } : void 0,
+      skills: Array.isArray(json.skills) ? json.skills.map((x) => asStr(x)).filter(Boolean) : [],
+      experience: Array.isArray(json.experience) ? json.experience.map((e) => ({
+        role: asStr(e?.role),
+        company: asStr(e?.company),
+        period: asStr(e?.period) || void 0,
+        highlights: Array.isArray(e?.highlights) ? e.highlights.map((h) => asStr(h)).filter(Boolean) : []
+      })).filter((e) => e.role || e.company) : [],
+      education: Array.isArray(json.education) ? json.education.map((e) => ({ degree: asStr(e?.degree), school: asStr(e?.school), period: asStr(e?.period) || void 0 })).filter((e) => e.degree || e.school) : [],
+      projects: Array.isArray(json.projects) ? json.projects.map((p) => ({ name: asStr(p?.name), description: asStr(p?.description) || void 0, link: asStr(p?.link) || void 0 })).filter((p) => p.name) : [],
+      certifications: Array.isArray(json.certifications) ? json.certifications.map((x) => asStr(x)).filter(Boolean) : [],
+      languages: Array.isArray(json.languages) ? json.languages.map((x) => asStr(x)).filter(Boolean) : []
+    };
+  } catch (err) {
+    log.warn("buildProfile AI failed: " + err.message);
+    return { ...fallback, raw: resumeText.slice(0, 2e4) };
+  }
+}
+function aiError(op, err) {
+  return new Error(op + " failed: " + err.message + " \u2014 check the AI key/model in Settings (an OpenAI-compatible endpoint like DeepSeek/OpenAI/Ollama is required)");
+}
+async function tailorResume(cfg, profile, job) {
+  const system = `You are a professional resume writer. Tailor a candidate's REAL profile to a specific job posting. Return ONLY JSON: {"resumeMarkdown": string (complete one-page resume in Markdown, reordered and reworded to emphasize the most relevant experience for THIS job; EVERY fact must come from the profile \u2014 never invent employers, titles, dates, or skills), "coverLetter": string (3-4 short paragraphs, specific to the company and role, referencing real achievements), "talkingPoints": string[] (6-8 one-line interview points connecting profile to job), "keywords": string[] (12-15 terms from the job description to weave in naturally)}.`;
+  const user = "PROFILE:\n" + JSON.stringify(profile, null, 1) + "\n\nJOB:\n" + JSON.stringify(job, null, 1);
+  try {
+    const json = parseJsonObject(await chatJson(cfg, system, user, 4e3));
+    return {
+      resumeMarkdown: asStr(json.resumeMarkdown, "No resume generated."),
+      coverLetter: asStr(json.coverLetter, ""),
+      talkingPoints: Array.isArray(json.talkingPoints) ? json.talkingPoints.map((x) => asStr(x)).filter(Boolean) : [],
+      keywords: Array.isArray(json.keywords) ? json.keywords.map((x) => asStr(x)).filter(Boolean) : []
+    };
+  } catch (err) {
+    throw aiError("tailorResume", err);
+  }
+}
+async function draftOutreach(cfg, profile, job, channel) {
+  const system = channel === "email" ? `Write a professional cold application email from a candidate applying to a job. Return ONLY JSON: {"subject": string, "body": string}. Body: 3-4 short paragraphs \u2014 who you are (from the profile), why this company/role (from the job), 2-3 specific real achievements that fit, and a clear call to action. Sign off with the candidate's real name and contact details from the profile. Never invent facts.` : 'Write a short, professional LinkedIn message (max 250 words, no subject) from a candidate reaching out about a job. Return ONLY JSON: {"body": string}. Reference 1-2 REAL achievements from the profile and why this role interests them. Never invent facts.';
+  const user = "PROFILE:\n" + JSON.stringify(profile, null, 1) + "\n\nJOB:\n" + JSON.stringify(job, null, 1);
+  try {
+    const json = parseJsonObject(await chatJson(cfg, system, user, 2e3));
+    return {
+      channel,
+      subject: channel === "email" ? asStr(json.subject) || void 0 : void 0,
+      body: asStr(json.body, "")
+    };
+  } catch (err) {
+    throw aiError("draftOutreach", err);
+  }
+}
+async function scoreFit(cfg, profile, job) {
+  const system = 'Score how well a candidate profile fits a job posting. Return ONLY JSON: {"score": number (0-100), "strengths": string[], "gaps": string[], "questions": string[]}. Be honest and specific.';
+  const user = "PROFILE:\n" + JSON.stringify(profile, null, 1) + "\n\nJOB:\n" + JSON.stringify(job, null, 1);
+  try {
+    const json = parseJsonObject(await chatJson(cfg, system, user, 1500));
+    return {
+      score: asNum(json.score, 50),
+      strengths: Array.isArray(json.strengths) ? json.strengths.map((x) => asStr(x)).filter(Boolean) : [],
+      gaps: Array.isArray(json.gaps) ? json.gaps.map((x) => asStr(x)).filter(Boolean) : [],
+      questions: Array.isArray(json.questions) ? json.questions.map((x) => asStr(x)).filter(Boolean) : []
+    };
+  } catch (err) {
+    throw aiError("scoreFit", err);
+  }
+}
 export {
   CATEGORIES,
+  buildProfile,
   buildTools,
   categorizeDomain,
   chatWithTools,
   classifyEmailType,
+  compileJsonPlugin,
   crawlPages,
   dbStats,
   defaultRunOptions,
   domainOf,
+  draftOutreach,
   emailNameHint,
   ensureDb,
   extractContactsSpider,
@@ -6429,13 +6843,18 @@ export {
   listLeads,
   openDb,
   parseContacts,
+  pluginDataUrls,
   recordVerification,
+  registerRuleSets,
   runAgent,
+  scoreFit,
   scrapePage,
   searchPages,
+  tailorResume,
   toolDefs,
   unverifiedEmails,
   upsertLead,
+  validateJsonPlugin,
   verifyEmail,
   verifyStored
 };

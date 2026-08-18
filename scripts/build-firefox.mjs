@@ -24,6 +24,8 @@ const FILES = [
   "manifest.firefox.json",
   "vendor/leads-core.js",
   "vendor/leads-core.js.map",
+  "vendor/pdf-extract.js",
+  "vendor/pdf.worker.mjs",
 ];
 
 await rm(dist, { recursive: true, force: true });

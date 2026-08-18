@@ -528,3 +528,59 @@ body {
 .status-badge.student   { background: rgba(52, 211, 153, 0.14); color: var(--success); }
 .status-badge.personal  { background: rgba(251, 191, 36, 0.14); color: var(--warning); }
 .status-badge.unknown   { background: var(--surface-hover); color: var(--text-muted); }
+/* Career assist */
+.career-output { margin-top: 12px; }
+.career-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.career-list { margin: 4px 0 10px 18px; }
+.career-list li { margin-bottom: 2px; }
+/* Assist tab */
+.assist-allowlist {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+.assist-log {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  min-height: 120px;
+  max-height: 260px;
+  overflow-y: auto;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.assist-log-line { margin-bottom: 6px; word-break: break-word; }
+.assist-log-line.system { color: var(--text-muted); }
+.assist-log-line.propose { color: var(--primary); font-weight: 600; }
+.assist-log-line.assistant { color: var(--text); }
+.assist-log-line.error { color: var(--danger); }
+.assist-pending {
+  background: rgba(124, 92, 252, 0.08);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  margin-bottom: 8px;
+}
+.assist-pending-title { font-weight: 700; margin-bottom: 6px; color: var(--primary); }
+.assist-pending-body { font-size: 12px; margin-bottom: 8px; word-break: break-word; }
+.assist-pending-body code {
+  background: var(--surface-hover);
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-size: 11px;
+}

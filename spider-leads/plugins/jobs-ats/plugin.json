@@ -1,0 +1,6 @@
+{
+  "id": "jobs-ats",
+  "name": "ATS Job Fetch",
+  "version": "0.1.0",
+  "description": "Agent tool fetch_jobs: public job listings from Greenhouse, Lever, and Ashby boards (no auth needed)."
+}

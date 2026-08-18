@@ -12,21 +12,19 @@
       "strict_min_version": "112.0"
     }
   },
-
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
-
   "permissions": [
     "activeTab",
     "storage",
     "sidePanel",
-    "scripting"
+    "scripting",
+    "tabs"
   ],
-
   "host_permissions": [
     "https://api.spider.cloud/*",
     "https://api.openai.com/*",
@@ -35,9 +33,14 @@
     "https://api.deepseek.com/*",
     "https://next-api.useplunk.com/*",
     "https://*.turso.io/*",
-    "http://localhost:*/*"
+    "http://localhost:*/*",
+    "https://*.linkedin.com/*",
+    "https://*.greenhouse.io/*",
+    "https://*.lever.co/*",
+    "https://*.ashbyhq.com/*",
+    "https://*.indeed.com/*",
+    "https://*.workday.com/*"
   ],
-
   "action": {
     "default_popup": "popup/popup.html",
     "default_title": "Spider — Scrape or Crawl",
@@ -47,21 +50,17 @@
       "48": "icons/icon-48.png"
     }
   },
-
   "side_panel": {
     "default_path": "sidepanel/sidepanel.html"
   },
-
   "options_ui": {
     "page": "options/options.html",
     "open_in_tab": true
   },
-
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
-
   "commands": {
     "_execute_action": {
       "suggested_key": {
@@ -84,5 +83,9 @@
       },
       "description": "Open Spider side panel"
     }
-  }
+  },
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ]
 }

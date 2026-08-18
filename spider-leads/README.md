@@ -232,6 +232,124 @@ Interests are derived per company from its pages (AI, with keyword fallback) and
 every lead from that domain; the side panel shows the top two per row and the CSV export
 includes the full list. `stats` prints the email-type breakdown and top interests.
 
+## Plugin system
+
+Plugins extend the pipeline without touching core code — **no developer skills needed**.
+
+### Two kinds of plugins
+
+| Kind | Who | Format |
+| --- | --- | --- |
+| **JSON plugins (no-code)** | anyone | A single `.json` file declaring tools, webhooks, rules, exporters — attached through the extension UI or `plugins install` |
+| **Code plugins** | developers | `plugin.json` + `index.ts` exporting `{ tools?, hooks?, exporters? }` |
+
+### No-code JSON plugin format
+
+```json
+{
+  "id": "my-plugin",
+  "name": "My Plugin",
+  "version": "1.0.0",
+  "description": "What it does",
+  "tools": [
+    {
+      "name": "fetch_jobs",
+      "description": "Fetch jobs from a company's public board",
+      "parameters": { "type": "object", "properties": { "company": { "type": "string" } }, "required": ["company"] },
+      "action": { "type": "builtin", "id": "fetch_jobs", "params": { "platform": "greenhouse" } }
+    }
+  ],
+  "hooks": {
+    "onLead": { "url": "https://yourapp.com/api/new-lead", "bodyTemplate": "{\"email\":\"{email}\",\"outcome\":\"{outcome}\}" } }
+  },
+  "rules": { "interests": [{ "match": "open source|github", "topic": "Open Source" }] },
+  "exporters": [{ "id": "jsonl", "label": "JSON Lines", "format": "jsonl" }],
+  "filters": [{ "name": "jobs", "pattern": "/(jobs|careers)/" }]
+}
+```
+
+- **tools** — either a **built-in action** (`fetch_url`, `search_web`, `fetch_jobs`) or a plain
+  **HTTP call** (`{param}` placeholders in URL/body, optional `extract` dot-path into the JSON response).
+- **hooks** — webhooks fired `onLead` (per stored lead) / `afterRun`, with `{email}`, `{company}`,
+  `{title}`, `{outcome}`, `{source}` placeholders.
+- **rules** — extra interest & category keyword rules (matched against page text).
+- **exporters** — `jsonl` / `json` / `csv` output formats.
+- **filters** — named URL filters usable as `--filter @jobs`.
+
+### Using plugins
+
+```bash
+spider-leads plugins list                 # inspect discovered plugins
+spider-leads plugins install ./my-plugin.json   # install a JSON plugin file
+spider-leads hunt acme.com                # hooks fire automatically
+spider-leads export out.jsonl --exporter jsonl
+spider-leads agent "…"                    # plugin tools are offered to the agent
+spider-leads hunt acme.com --filter @jobs # named plugin filter
+```
+
+### In the browser extension
+
+Options → **Plugins**: attach a `.json` file (or paste it), toggle enable/disable, remove.
+Installed plugins apply immediately to the Leads tab (hunt/search/agent) — webhooks fire,
+extra agent tools appear, rules affect categorization, exporters appear in the panel's
+export. Plugins are stored in `chrome.storage.local` as data, so MV3 CSP is never an issue.
+
+### Trust & collisions
+
+Plugins run with your keys' permissions — only install plugins you wrote or audited.
+If two plugins define the same tool/exporter id, the first loaded wins and a warning is printed.
+
+**Shipped examples** (`plugins/`): `jobs-ats` (code — fetch_jobs tool for Greenhouse/Lever/Ashby),
+`jobs-board-json` (JSON — the same capability as a no-code plugin), `webhook-leads`
+(code — onLead → `WEBHOOK_URL`), `exporter-jsonl` (code — JSON Lines export).
+
+## Career assist (profile → tailored resume → outreach drafts)
+
+The `career-assist` plugin (and the extension's **Career** tab) turn a resume into a job-specific
+application packet — with the human always sending:
+
+1. **Build a profile** — upload a resume (**PDF, DOCX, or TXT** — parsed locally, nothing uploaded)
+   or paste text; the AI extracts a structured profile (skills, experience, education, projects).
+2. **Tailor** — profile + job description → tailored resume (Markdown), cover letter, interview
+   talking points, and keywords. Every fact stays true to the profile — tailoring, never fabricating.
+3. **Fit score** — 0–100 fit with strengths, gaps, and questions to research.
+4. **Outreach drafts** — a cold **email** (subject + body; opens in your own mail app via mailto)
+   or a **LinkedIn message** (copied to your clipboard; you paste and send). The extension never
+   sends anything automatically.
+
+Agent mode gets the same powers as tools: `build_profile`, `tailor_resume`, `draft_outreach`,
+`score_fit`. (These tools need the session config — plugin tools now receive `{cfg, db}` context.)
+
+## AI plugin builder (extension)
+
+Options → Plugins → **"Generate a plugin with AI"**: describe what you want in plain language
+(e.g. *"a tool that checks a company's latest news before outreach, and a webhook that posts new
+leads to Slack"*) and the AI writes a JSON plugin for you. You review/edit it in the preview box,
+then install it — same validation as manual installs.
+
+## Browser assistant (approval-gated)
+
+The extension's **Assist** tab gives the AI browser actions — with **your approval for every single one**:
+
+1. You're on a job/application page and type e.g. *"Fill the application form from my profile"*.
+2. The AI inspects the page (`read_page`) and proposes actions one at a time (navigate, fill_form,
+   set_text, click, scroll_to), each with a reason.
+3. Each proposal appears as an **Approve / Deny** card — only approved actions execute, on the
+   current tab, via `chrome.scripting`.
+
+Safety rails (enforced in code, not just prompts):
+
+- **No submit/send actions exist** — the tool schema has none, and the click helper refuses
+  submit/apply/send-like elements regardless.
+- **Sensitive fields are never auto-filled** — visa, salary, demographics, SSN, birth dates, etc.
+  are skipped and reported.
+- **Per-site allowlist** — job platforms are pre-allowed; any other site must be added explicitly
+  (requests the optional host permission on your click). Non-allowlisted sites block execution.
+- **Stop button**, action log, and the model is told the user submits manually.
+- No login/credential handling anywhere.
+
+The loop uses the same function-calling stack (DeepSeek `deepseek-v4-flash` / OpenAI etc.).
+
 ## Browser extension integration
 
 The same pipeline powers the **Spider browser extension** in the parent directory

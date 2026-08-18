@@ -21,6 +21,11 @@ export { categorizeDomain, parseContacts, CATEGORIES, chatWithTools } from "../s
 export { runAgent } from "../spider-leads/src/agent.ts";
 export type { AgentResult } from "../spider-leads/src/agent.ts";
 export { buildTools, toolDefs } from "../spider-leads/src/tools.ts";
+export { compileJsonPlugin, pluginDataUrls, validateJsonPlugin } from "../spider-leads/src/json-plugin.ts";
+export type { JsonPluginManifest, ValidationResult } from "../spider-leads/src/json-plugin.ts";
+export { registerRuleSets } from "../spider-leads/src/ai.ts";
+export { buildProfile, tailorResume, draftOutreach, scoreFit } from "../spider-leads/src/career.ts";
+export type { CareerProfile, JobContext, TailoredPacket, OutreachDraft, FitScore } from "../spider-leads/src/career.ts";
 export { classifyEmailType, extractEmails, isValidEmail, domainOf, emailNameHint } from "../spider-leads/src/extract.ts";
 
 export type { Config } from "../spider-leads/src/config.ts";

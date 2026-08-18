@@ -299,3 +299,13 @@ body {
   border-radius: 4px;
   font-size: 11px;
 }
+/* Plugins */
+.installed-plugins { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.installed-plugin {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  background: var(--surface);
+  font-size: 12px;
+}
+.small-muted { color: var(--text-muted); font-size: 12px; }

@@ -6,12 +6,15 @@ import type { Client } from "@libsql/client";
 import type { Config } from "./config.ts";
 import { chatWithTools, type ToolCallMsg } from "./ai.ts";
 import { buildTools, toolDefs, type Tool } from "./tools.ts";
+import type { PluginTool } from "./types.ts";
 import { log } from "./log.ts";
 
 export interface AgentOptions {
   maxTurns?: number;
   limit?: number;
   dryRun?: boolean;
+  /** Extra tools contributed by plugins. */
+  extraTools?: PluginTool[];
 }
 
 export interface AgentResult {
@@ -56,6 +59,20 @@ export async function runAgent(
 ): Promise<AgentResult> {
   const maxTurns = opts.maxTurns ?? 20;
   const tools = buildTools(cfg, db, { dryRun: opts.dryRun, limit: opts.limit });
+  // Merge plugin tools (built-ins win on name collision — plugins are warned).
+  for (const pt of opts.extraTools ?? []) {
+    if (!pt || typeof pt.name !== "string" || !pt.name) continue;
+    if (tools[pt.name]) {
+      log.warn("Plugin tool '" + pt.name + "' collides with a built-in tool — skipping");
+      continue;
+    }
+    tools[pt.name] = {
+      name: pt.name,
+      description: pt.description,
+      parameters: pt.parameters,
+      run: (args, ctx) => Promise.resolve(pt.run(args, ctx)),
+    };
+  }
   const defs = toolDefs(tools);
   const calls = new Map<string, number>();
   const errors: string[] = [];
@@ -66,12 +83,12 @@ export async function runAgent(
   ];
 
   let final = "";
-  let turns = 0;
+  let rounds = 0;
   let stored = 0, updated = 0, verified = 0, invalid = 0;
-  let lastResp: Awaited<ReturnType<typeof chatWithTools>> | undefined;
 
-  for (; turns < maxTurns; turns++) {
-    log.step("Agent turn " + (turns + 1) + "/" + maxTurns);
+  for (let round = 0; round < maxTurns; round++) {
+    rounds = round + 1;
+    log.step("Agent turn " + rounds + "/" + maxTurns);
     let resp;
     try {
       resp = await chatWithTools(cfg, messages, defs);
@@ -88,14 +105,13 @@ export async function runAgent(
       break;
     }
 
-    lastResp = resp;
     if (resp.toolCalls.length === 0) {
       final = resp.content || "(no summary returned)";
       break;
     }
 
     for (const call of resp.toolCalls) {
-      const result = await executeToolCall(tools, call, calls, errors);
+      const result = await executeToolCall(tools, call, calls, errors, cfg, db);
       // Feed the call + its result back into the conversation.
       messages.push({
         role: "assistant",
@@ -125,16 +141,15 @@ export async function runAgent(
         } catch { /* ignore */ }
       }
     }
-    if (turns === maxTurns - 1) {
-      final = "(turn budget reached)";
-    }
   }
+
+  if (!final) final = "(turn budget reached after " + rounds + " rounds)";
 
   log.info("Agent finished: " + final.slice(0, 200));
   return {
     objective,
     final,
-    turns: turns + (lastResp ? 1 : 0),
+    turns: rounds,
     toolCalls: countToolCalls(calls),
     stored,
     updated,
@@ -148,7 +163,9 @@ async function executeToolCall(
   tools: Record<string, Tool>,
   call: ToolCallMsg,
   calls: Map<string, number>,
-  errors: string[]
+  errors: string[],
+  cfg: Config,
+  db: Client
 ): Promise<string> {
   calls.set(call.name, (calls.get(call.name) ?? 0) + 1);
   const tool = tools[call.name];
@@ -159,7 +176,7 @@ async function executeToolCall(
   }
   log.info("  → " + call.name + " " + JSON.stringify(call.args ?? {}).slice(0, 160));
   try {
-    return await tool.run(call.args ?? {});
+    return await tool.run(call.args ?? {}, { cfg, db });
   } catch (err) {
     const msg = call.name + ": " + (err as Error).message;
     errors.push(msg);

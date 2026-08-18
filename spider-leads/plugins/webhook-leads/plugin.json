@@ -1,0 +1,6 @@
+{
+  "id": "webhook-leads",
+  "name": "Lead Webhook",
+  "version": "0.1.0",
+  "description": "POSTs every stored lead to a webhook URL (set WEBHOOK_URL env var)."
+}

@@ -7,6 +7,8 @@ import {
   defaultRunOptions, ensureDb, hunt, huntSearch, verifyStored,
 } from "./pipeline.ts";
 import { runAgent } from "./agent.ts";
+import { discoverPluginsDir, installJsonPluginFile, loadPlugins, resolveNamedFilter } from "./plugins.ts";
+import type { Plugin } from "./types.ts";
 import { dbStats, listLeads } from "./db.ts";
 import { log } from "./log.ts";
 
@@ -29,6 +31,8 @@ const FLAGS: Flag[] = [
   { name: "interest", alias: "i", takesValue: true },
   { name: "format", alias: "F", takesValue: true },
   { name: "output", alias: "o", takesValue: true },
+  { name: "plugins-dir", takesValue: true },
+  { name: "exporter", takesValue: true },
   { name: "query", alias: "q", takesValue: true },
   { name: "verify", takesValue: false },
   { name: "no-verify", takesValue: false },
@@ -90,7 +94,9 @@ COMMANDS
   verify                  Verify stored leads with Plunk (default: status 'new')
   list                    Show stored leads
   stats                   Database summary (counts by status and category)
-  export <file>           Export leads to CSV or JSON (--format csv|json)
+  export <file>           Export leads to CSV or JSON (--format csv|json, or --exporter <id>)
+  plugins list            List discovered plugins (tools / hooks / exporters)
+  plugins install <file>  Install a JSON plugin file into the plugins directory
   help                    This help
 
 FLAGS
@@ -101,6 +107,8 @@ FLAGS
   -f, --filter REGEX   Only extract from URLs matching REGEX
   -c, --concurrency N  Concurrent fetches / verifications (default 4-5)
       --max-turns N    Agent turn budget (default 20)
+      --plugins-dir P   Plugin directory (default: ./plugins or $SPIDER_PLUGINS_DIR)
+      --exporter ID     Use a plugin exporter for 'export' (e.g. --exporter jsonl)
   -s, --status ST      Filter by status: new | verified | invalid | error
   -C, --category CAT   Filter by industry category
   -t, --type TYPE      Filter by email type: corporate | business | student | personal
@@ -172,6 +180,17 @@ async function main(): Promise<number> {
   cfg.verbose = !!flags.verbose;
   log.verbose = cfg.verbose;
 
+  // Load plugins once for commands that support them.
+  let plugins: Plugin[] = [];
+  if (["hunt", "search", "agent", "export"].includes(command)) {
+    const dir = discoverPluginsDir(typeof flags["plugins-dir"] === "string" ? flags["plugins-dir"] : undefined);
+    const loaded = await loadPlugins(dir, cfg);
+    plugins = loaded.plugins;
+    if (loaded.plugins.length > 0) {
+      log.info("Plugins: " + loaded.plugins.map((p) => p.id).join(", "));
+    }
+  }
+
   try {
     switch (command) {
       case "init-db": {
@@ -190,9 +209,15 @@ async function main(): Promise<number> {
         opts.verify = flags["no-verify"] ? false : cfg.verifyOnHunt;
         opts.dryRun = !!flags["dry-run"];
         opts.concurrency = numFlag(flags, "concurrency", opts.concurrency);
-        if (typeof flags.filter === "string") opts.urlFilter = flags.filter;
+        if (typeof flags.filter === "string") {
+          opts.urlFilter = resolveNamedFilter(plugins, flags.filter) ?? flags.filter;
+          if (flags.filter.startsWith("@") && opts.urlFilter === flags.filter) {
+            log.warn("Named filter '" + flags.filter + "' not found in any plugin — using it as a raw regex");
+          }
+        }
         if (opts.dryRun) log.warn("dry-run mode — nothing will be fetched or stored");
 
+        opts.plugins = plugins;
         const db = await ensureDb(cfg);
         const summary = await hunt(db, cfg, positionals, opts);
         printRunSummary(summary);
@@ -210,10 +235,36 @@ async function main(): Promise<number> {
         opts.verify = flags["no-verify"] ? false : cfg.verifyOnHunt;
         opts.dryRun = !!flags["dry-run"];
         opts.concurrency = numFlag(flags, "concurrency", opts.concurrency);
+        opts.plugins = plugins;
         const db = await ensureDb(cfg);
         const summary = await huntSearch(db, cfg, query, opts);
         printRunSummary(summary);
         await db.close();
+        return 0;
+      }
+      case "plugins": {
+        const dir = discoverPluginsDir(typeof flags["plugins-dir"] === "string" ? flags["plugins-dir"] : undefined);
+        if (positionals[0] === "install") {
+          const file = positionals[1];
+          if (!file) throw new Error("plugins install needs a plugin file path, e.g. plugins install ./my-plugin.json");
+          await (await import("node:fs/promises")).mkdir(dir, { recursive: true });
+          const id = await installJsonPluginFile(file, dir, cfg);
+          log.ok("Installed plugin '" + id + "' into " + dir);
+          return 0;
+        }
+        const { plugins: found, errors } = await loadPlugins(dir, cfg);
+        log.raw("Plugins directory: " + dir);
+        if (found.length === 0) log.raw("No plugins found.");
+        for (const p of found) {
+          log.raw("");
+          log.raw(p.id + " v" + p.version + " — " + p.name);
+          if (p.description) log.raw("  " + p.description);
+          if (p.tools.length) log.raw("  tools: " + p.tools.map((t) => t.name).join(", "));
+          const hookNames = Object.keys(p.hooks).filter((k) => typeof (p.hooks as Record<string, unknown>)[k] === "function");
+          if (hookNames.length) log.raw("  hooks: " + hookNames.join(", "));
+          if (p.exporters.length) log.raw("  exporters: " + p.exporters.map((e) => e.id + " (" + e.label + ")").join(", "));
+        }
+        for (const e of errors) log.warn("Failed: " + e);
         return 0;
       }
       case "agent": {
@@ -225,6 +276,7 @@ async function main(): Promise<number> {
           maxTurns: numFlag(flags, "max-turns", 20),
           limit: numFlag(flags, "limit", 10),
           dryRun: !!flags["dry-run"],
+          extraTools: plugins.flatMap((p) => p.tools),
         });
         log.raw("");
         log.raw("┌─ Agent run: " + objective);
@@ -288,6 +340,17 @@ async function main(): Promise<number> {
         const fmt = (typeof flags.format === "string" ? flags.format : file.endsWith(".json") ? "json" : "csv").toLowerCase();
         const db = await ensureDb(cfg);
         const rows = await listLeads(db, { limit: 100000 });
+
+        // Plugin exporters: --exporter <id>
+        if (typeof flags.exporter === "string") {
+          const exporter = plugins.flatMap((p) => p.exporters).find((e) => e.id === flags.exporter);
+          if (!exporter) throw new Error("No plugin exporter with id '" + flags.exporter + "' (see 'plugins list')");
+          const out = await exporter.export(rows);
+          await import("node:fs/promises").then((fs) => fs.writeFile(file, out.content));
+          log.ok("Wrote " + rows.length + " lead(s) to " + file + " via plugin exporter '" + exporter.id + "'");
+          await db.close();
+          return 0;
+        }
         const cols = ["email", "person_name", "title", "phone", "company", "domain", "email_type", "category", "tier", "status", "interests", "source_url", "created_at"];
         const csv = [
           cols.join(","),
