@@ -5,6 +5,7 @@
 import type { Config } from "./config.ts";
 import type { Categorization, ContactRecord, Interest, PageContent } from "./types.ts";
 import { emailNameHint, extractEmails, extractLinkedin, extractPhones } from "./extract.ts";
+import { extractNamedPeople } from "./people.ts";
 import { log } from "./log.ts";
 
 export const CATEGORIES = [
@@ -346,6 +347,18 @@ export function parseContactsLocal(pages: PageContent[]): ContactRecord[] {
         out.push({ phone, person_name: undefined });
       }
     }
+    // Named people without a published email (feeds employee email guessing).
+    for (const person of extractNamedPeople(page.markdown)) {
+      const key = "n:" + person.name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        person_name: person.name,
+        title: person.title,
+        linkedin: person.linkedin,
+        github: undefined,
+      });
+    }
   }
   return out;
 }
@@ -381,8 +394,10 @@ export async function parseContacts(
         "You extract business contact information from website pages for B2B lead generation. " +
         "Return ONLY a JSON object: {\"contacts\": [{\"email\": \"…\", \"person_name\": \"…\", " +
         "\"title\": \"…\", \"phone\": \"…\", \"linkedin\": \"…\"}]}. " +
-        "Include only real contact records that appear in the text. Email must look like a real address " +
-        "(reject image filenames, placeholder domains, @example.com etc.). Use null for unknown fields.";
+        "Include only real contact records that appear in the text. Include team members even when no " +
+        "email is published (set email to null — the name, title and LinkedIn are what matter). " +
+        "Email must look like a real address (reject image filenames, placeholder domains, @example.com etc.). " +
+        "Use null for unknown fields.";
       const user = `Company: ${company}\n\nPages:\n\n${snippet}`;
       const json = parseJsonObject(await chatJson(cfg, system, user, 2000));
       const contacts: any[] = Array.isArray(json.contacts) ? json.contacts : [];
@@ -393,6 +408,7 @@ export async function parseContacts(
           title: typeof c.title === "string" ? c.title : undefined,
           phone: typeof c.phone === "string" ? c.phone : undefined,
           linkedin: typeof c.linkedin === "string" ? c.linkedin : undefined,
+          github: typeof c.github === "string" ? c.github : undefined,
         };
         const key = rec.email ?? `p:${rec.phone ?? rec.person_name ?? Math.random()}`;
         if (seen.has(key)) continue;

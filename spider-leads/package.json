@@ -1,6 +1,6 @@
 {
   "name": "spider-leads",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Find, categorize, store, and verify B2B leads with Spider Cloud + AI + Turso + Plunk",
   "type": "module",
   "private": true,

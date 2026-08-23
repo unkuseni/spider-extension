@@ -38,3 +38,12 @@ test("agent: turn budget is enforced", async () => {
   assert.ok(result.turns <= 2);
   assert.match(result.final, /budget/);
 });
+
+test("agent: buildTools exposes employee-discovery and email-inference tools", async () => {
+  const { buildTools } = await import("../spider-leads/src/tools.ts");
+  const tools = buildTools(cfg, db, { limit: 3 });
+  assert.ok(tools.find_employees, "find_employees tool is available");
+  assert.ok(tools.guess_emails, "guess_emails tool is available");
+  // Core tools referenced by the mock's tool-calling script are still present.
+  assert.ok(tools.search_web && tools.extract_contacts && tools.store_leads && tools.verify_email);
+});

@@ -465,6 +465,156 @@ function classifyEmailType(email) {
   return "corporate";
 }
 
+// spider-leads/src/people.ts
+var GITHUB_RE = /https?:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)(?:\/([A-Za-z0-9_.-]+))?/g;
+function extractGithubHandles(text) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const m of text.matchAll(GITHUB_RE)) {
+    const org = m[1];
+    const user = m[2] ?? null;
+    const url = m[0];
+    if (seen.has(org + "/" + (user ?? ""))) continue;
+    seen.add(org + "/" + (user ?? ""));
+    out.push({
+      // A link like github.com/org/team or github.com/org (single segment) is an org.
+      org: !user || user === "team" || user === "people" ? org : null,
+      user,
+      url
+    });
+  }
+  return out;
+}
+function extractGithubOrgs(text) {
+  const handles = extractGithubHandles(text);
+  const orgs = /* @__PURE__ */ new Set();
+  for (const h of handles) {
+    if (h.org) orgs.add(h.org);
+  }
+  return [...orgs];
+}
+function extractGithubUsers(text) {
+  const handles = extractGithubHandles(text);
+  const users = /* @__PURE__ */ new Set();
+  for (const h of handles) if (h.user) users.add(h.user);
+  for (const m of text.matchAll(/(?:^|\s)@([A-Za-z0-9_-]{2,30})(?=\s|$)/g)) {
+    if (!/^\d+$/.test(m[1])) users.add(m[1]);
+  }
+  return [...users];
+}
+var LINKEDIN_RE2 = /https?:\/\/(?:www\.)?linkedin\.com\/in\/[A-Za-z0-9_-]+/g;
+function extractNamedPeople(markdown) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const lines = markdown.split(/\r?\n/).map((l) => l.replace(/^\s*[-*•·]\s*/, "").trim());
+  for (const line of lines) {
+    const name = parseNameTitle(line);
+    if (!name) continue;
+    const key = name.name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const linkedin = line.match(LINKEDIN_RE2)?.[0];
+    const github = line.match(GITHUB_RE)?.[0];
+    out.push({
+      name: name.name,
+      title: name.title,
+      linkedin,
+      github,
+      source: "page",
+      sourceUrl: void 0
+      // caller fills the page URL
+    });
+  }
+  return out;
+}
+function parseNameTitle(line) {
+  if (!line || line.length > 140) return null;
+  if (/^(https?:|www\.|tel:|mailto:|@|#|\||\*)/i.test(line)) return null;
+  if (/\b(privacy|terms|copyright|all rights|menu|home|about us|login|sign)/i.test(line)) return null;
+  if (/(\$\d|\b\d{3,4}[-.)]\s?\d{3,4}\b)/.test(line) && !/[—–,-]/.test(line)) return null;
+  const parts = line.split(/\s+[—–·|]\s+|\s+-\s+|,\s+|\s+\(|\s+:\s+/).map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  const maybeName = parts[0];
+  const rest = parts[1].replace(/\)$/, "").trim();
+  const nameParts = maybeName.split(/\s+/).filter(Boolean);
+  if (nameParts.length < 2 || nameParts.length > 4) return null;
+  for (const p of nameParts) {
+    if (!/^[A-Za-zÀ-ÿ'.-]{1,30}$/.test(p)) return null;
+  }
+  if (nameParts.some((p) => p.length <= 1 && /^[A-Z]$/.test(p))) {
+  }
+  const name = nameParts.map((p) => /^[a-z]/.test(p) ? p[0].toUpperCase() + p.slice(1) : p).join(" ");
+  const looksLikeEmail = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(rest);
+  const looksLikePhone = /^\(?\d{2,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{0,4}$/.test(rest) && /[\d\s().-]{7,}/.test(rest);
+  const title = !looksLikeEmail && !looksLikePhone && rest.length > 0 && rest.length <= 60 ? rest : void 0;
+  if (!title && !looksLikeEmail) return null;
+  return { name, title };
+}
+function splitName(fullName) {
+  const cleaned = (fullName ?? "").replace(/\b(jr|sr|ii|iii|iv|md|phd|esq)\b\.?$/i, "").replace(/[()]/g, " ").trim();
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  const bad = words.filter((w) => /[0-9@/]/.test(w) || w.startsWith("@") || w.includes("http"));
+  if (bad.length > 0 || words.length < 2) return null;
+  const last = words[words.length - 1];
+  const first = words[0];
+  if (!/^[A-Za-zÀ-ÿ'.-]+$/.test(first) || !/^[A-Za-zÀ-ÿ'.-]+$/.test(last)) return null;
+  const middle = words.length > 2 ? words.slice(1, -1).join(" ") : void 0;
+  return { first, last, middle };
+}
+function asciiName(s) {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9]/g, "");
+}
+function dots(s) {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, ".").replace(/^\.+|\.+$/g, "");
+}
+function localPartFor(name, pattern) {
+  const parts = splitName(name);
+  if (!parts) return null;
+  const f = parts.first.toLowerCase();
+  const l = parts.last.toLowerCase();
+  const fi = f[0];
+  const li = l[0];
+  switch (pattern) {
+    case "first.last":
+      return dots(f + " " + l);
+    case "first_last":
+      return f + "_" + l;
+    case "firstlast":
+      return f + l;
+    case "f.last":
+      return fi + "." + l;
+    case "flast":
+      return fi + l;
+    case "firstl":
+      return f + li;
+    case "f.lastname":
+      return fi + "." + l;
+    case "last.first":
+      return dots(l + " " + f);
+    case "first":
+      return f;
+    default:
+      return null;
+  }
+}
+var PATTERN_LABELS = [
+  "first.last",
+  "first_last",
+  "firstlast",
+  "f.last",
+  "flast",
+  "firstl",
+  "last.first",
+  "first"
+];
+function patternOf(email, name) {
+  const local = email.split("@")[0].toLowerCase();
+  for (const p of PATTERN_LABELS) {
+    if (localPartFor(name, p) === local) return p;
+  }
+  return null;
+}
+
 // spider-leads/src/ai.ts
 var CATEGORIES = [
   "SaaS / Software",
@@ -735,6 +885,17 @@ function parseContactsLocal(pages) {
         out.push({ phone, person_name: void 0 });
       }
     }
+    for (const person of extractNamedPeople(page.markdown)) {
+      const key = "n:" + person.name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        person_name: person.name,
+        title: person.title,
+        linkedin: person.linkedin,
+        github: void 0
+      });
+    }
   }
   return out;
 }
@@ -753,7 +914,7 @@ async function parseContacts(cfg, pages, company) {
     try {
       const snippet = chunk.map((p) => `URL: ${p.url}
 ${p.markdown.slice(0, 6e3)}`).join("\n\n----\n\n").slice(0, CHUNK_CHARS);
-      const system = 'You extract business contact information from website pages for B2B lead generation. Return ONLY a JSON object: {"contacts": [{"email": "\u2026", "person_name": "\u2026", "title": "\u2026", "phone": "\u2026", "linkedin": "\u2026"}]}. Include only real contact records that appear in the text. Email must look like a real address (reject image filenames, placeholder domains, @example.com etc.). Use null for unknown fields.';
+      const system = 'You extract business contact information from website pages for B2B lead generation. Return ONLY a JSON object: {"contacts": [{"email": "\u2026", "person_name": "\u2026", "title": "\u2026", "phone": "\u2026", "linkedin": "\u2026"}]}. Include only real contact records that appear in the text. Include team members even when no email is published (set email to null \u2014 the name, title and LinkedIn are what matter). Email must look like a real address (reject image filenames, placeholder domains, @example.com etc.). Use null for unknown fields.';
       const user = `Company: ${company}
 
 Pages:
@@ -767,7 +928,8 @@ ${snippet}`;
           person_name: typeof c2.person_name === "string" ? c2.person_name : void 0,
           title: typeof c2.title === "string" ? c2.title : void 0,
           phone: typeof c2.phone === "string" ? c2.phone : void 0,
-          linkedin: typeof c2.linkedin === "string" ? c2.linkedin : void 0
+          linkedin: typeof c2.linkedin === "string" ? c2.linkedin : void 0,
+          github: typeof c2.github === "string" ? c2.github : void 0
         };
         const key = rec.email ?? `p:${rec.phone ?? rec.person_name ?? Math.random()}`;
         if (seen.has(key)) continue;
@@ -847,9 +1009,9 @@ async function verifyBatch(cfg, emails, opts = {}) {
       const email = emails[cursor++];
       try {
         const res = await verifyEmail(cfg, email);
-        opts.onResult?.(email, res);
+        await opts.onResult?.(email, res);
       } catch (err) {
-        opts.onResult?.(email, null, err);
+        await opts.onResult?.(email, null, err);
       }
     }
   };
@@ -5555,6 +5717,9 @@ var SCHEMA = [
     tier TEXT,
     confidence REAL,
     email_type TEXT,
+    email_source TEXT,
+    email_pattern TEXT,
+    email_score REAL,
     interests TEXT,
     source_url TEXT,
     source TEXT NOT NULL DEFAULT 'hunt',
@@ -5573,6 +5738,38 @@ var SCHEMA = [
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email ON leads(email) WHERE email IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status)`,
   `CREATE INDEX IF NOT EXISTS idx_leads_category ON leads(category)`,
+  `CREATE TABLE IF NOT EXISTS people (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    title TEXT,
+    email TEXT,
+    linkedin TEXT,
+    github TEXT,
+    domain TEXT NOT NULL,
+    company TEXT,
+    source TEXT NOT NULL DEFAULT 'page',
+    source_url TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at TEXT,
+    UNIQUE(domain, name)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_people_domain ON people(domain)`,
+  `CREATE TABLE IF NOT EXISTS email_candidates (
+    email TEXT PRIMARY KEY,
+    person_name TEXT,
+    domain TEXT NOT NULL,
+    pattern TEXT,
+    score REAL,
+    reason TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    source_url TEXT,
+    detail TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_candidates_domain ON email_candidates(domain)`,
+  `CREATE INDEX IF NOT EXISTS idx_candidates_status ON email_candidates(status)`,
   `CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     target TEXT NOT NULL,
@@ -5590,6 +5787,9 @@ async function initSchema(db) {
   for (const sql of SCHEMA) await db.execute(sql);
   await ensureColumn(db, "leads", "email_type", "TEXT");
   await ensureColumn(db, "leads", "interests", "TEXT");
+  await ensureColumn(db, "leads", "email_source", "TEXT");
+  await ensureColumn(db, "leads", "email_pattern", "TEXT");
+  await ensureColumn(db, "leads", "email_score", "REAL");
 }
 async function ensureColumn(db, table, column, decl) {
   try {
@@ -5607,11 +5807,12 @@ async function upsertLead(db, lead) {
   const id = crypto.randomUUID();
   const raw = JSON.stringify(lead.raw ?? null);
   const interests = JSON.stringify(lead.interests ?? []);
+  const emailSource = lead.emailSource ?? "unknown";
   await db.execute({
     sql: `INSERT INTO leads (id, email, person_name, title, phone, linkedin, company, domain,
-            category, subcategory, tier, confidence, email_type, interests,
-            source_url, source, status, raw_data, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+            category, subcategory, tier, confidence, email_type, email_source, email_pattern, email_score,
+            interests, source_url, source, status, raw_data, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
      ON CONFLICT DO UPDATE SET
        person_name = COALESCE(excluded.person_name, leads.person_name),
        title       = COALESCE(excluded.title, leads.title),
@@ -5624,6 +5825,18 @@ async function upsertLead(db, lead) {
        tier        = COALESCE(excluded.tier, leads.tier),
        confidence  = COALESCE(excluded.confidence, leads.confidence),
        email_type  = COALESCE(excluded.email_type, leads.email_type),
+       email_source = CASE
+                        -- Keep the more authoritative source: page > github > agent > guessed
+                        WHEN excluded.email_source = 'page' THEN 'page'
+                        WHEN leads.email_source = 'page' THEN 'page'
+                        WHEN excluded.email_source = 'github' THEN 'github'
+                        WHEN leads.email_source = 'github' THEN 'github'
+                        WHEN excluded.email_source = 'agent' THEN 'agent'
+                        WHEN leads.email_source = 'agent' THEN 'agent'
+                        ELSE COALESCE(excluded.email_source, leads.email_source)
+                      END,
+       email_pattern = COALESCE(excluded.email_pattern, leads.email_pattern),
+       email_score   = COALESCE(excluded.email_score, leads.email_score),
        interests   = COALESCE(excluded.interests, leads.interests),
        source_url  = COALESCE(excluded.source_url, leads.source_url),
        raw_data    = COALESCE(excluded.raw_data, leads.raw_data),
@@ -5642,6 +5855,9 @@ async function upsertLead(db, lead) {
       lead.tier,
       lead.confidence,
       lead.emailType,
+      emailSource,
+      lead.emailPattern ?? null,
+      lead.emailScore ?? null,
       interests,
       lead.sourceUrl,
       lead.source,
@@ -5686,12 +5902,16 @@ async function listLeads(db, opts = {}) {
     where.push("email_type = ?");
     args.push(opts.emailType);
   }
+  if (opts.emailSource) {
+    where.push("email_source = ?");
+    args.push(opts.emailSource);
+  }
   if (opts.interest) {
     where.push("interests LIKE ?");
     args.push("%" + opts.interest + "%");
   }
   const sql = `SELECT id, email, person_name, title, phone, company, domain, category, tier,
-            confidence, email_type, interests, source_url, source, status, email_valid, verified_at, created_at
+            confidence, email_type, email_source, email_pattern, email_score, interests, source_url, source, status, email_valid, verified_at, created_at
      FROM leads ${where.length ? "WHERE " + where.join(" AND ") : ""}
      ORDER BY created_at DESC LIMIT ? OFFSET ?`;
   args.push(opts.limit ?? 50, opts.offset ?? 0);
@@ -5706,6 +5926,142 @@ async function unverifiedEmails(db, opts = {}) {
     args: [status, opts.limit ?? 1e3]
   });
   return res.rows.map((r) => r.email);
+}
+async function upsertPerson(db, domain, person, company) {
+  const name = (person.name ?? "").trim();
+  if (!name) return "updated";
+  const exists = await db.execute({
+    sql: "SELECT id FROM people WHERE domain = ? AND lower(name) = lower(?) LIMIT 1",
+    args: [domain, name]
+  });
+  const email = person.email?.toLowerCase().trim() ?? null;
+  const title = person.title?.trim() ?? null;
+  const linkedin = person.linkedin?.trim() ?? null;
+  const github = person.github?.trim() ?? null;
+  const sourceUrl = person.sourceUrl ?? null;
+  const notes = person.notes ?? null;
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  if (exists.rows.length > 0) {
+    await db.execute({
+      sql: `UPDATE people SET
+        title      = COALESCE(?, title),
+        email      = COALESCE(?, email),
+        linkedin   = COALESCE(?, linkedin),
+        github     = COALESCE(?, github),
+        company    = COALESCE(?, company),
+        source     = CASE WHEN ? = 'github' AND source = 'page' THEN source ELSE ? END,
+        source_url = COALESCE(?, source_url),
+        notes      = COALESCE(?, notes),
+        updated_at = ?
+       WHERE id = ?`,
+      args: [
+        title,
+        email,
+        linkedin,
+        github,
+        company ?? null,
+        person.source ?? "page",
+        person.source ?? "page",
+        sourceUrl,
+        notes,
+        now,
+        String(exists.rows[0].id)
+      ]
+    });
+    return "updated";
+  }
+  await db.execute({
+    sql: `INSERT INTO people (id, name, title, email, linkedin, github, domain, company, source, source_url, notes, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      crypto.randomUUID(),
+      name,
+      title,
+      email,
+      linkedin,
+      github,
+      domain,
+      company ?? null,
+      person.source ?? "page",
+      sourceUrl,
+      notes,
+      now
+    ]
+  });
+  return "new";
+}
+async function peopleForDomain(db, domain, opts = {}) {
+  const res = await db.execute({
+    sql: `SELECT * FROM people WHERE domain = ? ${opts.noEmail ? "AND (email IS NULL OR email = '')" : ""}
+     ORDER BY created_at DESC LIMIT 1000`,
+    args: [domain]
+  });
+  return res.rows;
+}
+async function knownEmailsForDomain(db, domain) {
+  const res = await db.execute({
+    sql: `SELECT email, person_name FROM leads
+     WHERE domain = ? AND email IS NOT NULL AND person_name IS NOT NULL
+       AND person_name != '' AND email_valid = 1 LIMIT 500`,
+    args: [domain]
+  });
+  return res.rows.map((r) => ({ email: r.email, name: r.person_name }));
+}
+async function listPeople(db, opts = {}) {
+  const where = [];
+  const args = [];
+  if (opts.domain) {
+    where.push("domain = ?");
+    args.push(opts.domain);
+  }
+  if (opts.noEmail) {
+    where.push("(email IS NULL OR email = '')");
+  }
+  const sql = `SELECT * FROM people ${where.length ? "WHERE " + where.join(" AND ") : ""}
+     ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+  args.push(opts.limit ?? 100, opts.offset ?? 0);
+  const res = await db.execute({ sql, args });
+  return res.rows;
+}
+async function upsertCandidate(db, c2) {
+  await db.execute({
+    sql: `INSERT INTO email_candidates (email, person_name, domain, pattern, score, reason, source_url, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(email) DO UPDATE SET
+       person_name = COALESCE(excluded.person_name, email_candidates.person_name),
+       domain      = COALESCE(excluded.domain, email_candidates.domain),
+       pattern     = COALESCE(excluded.pattern, email_candidates.pattern),
+       score       = COALESCE(excluded.score, email_candidates.score),
+       reason      = COALESCE(excluded.reason, email_candidates.reason),
+       source_url  = COALESCE(excluded.source_url, email_candidates.source_url),
+       updated_at  = excluded.updated_at`,
+    args: [
+      c2.email.toLowerCase(),
+      c2.personName,
+      c2.domain,
+      c2.pattern,
+      c2.score,
+      c2.reason,
+      null,
+      (/* @__PURE__ */ new Date()).toISOString(),
+      (/* @__PURE__ */ new Date()).toISOString()
+    ]
+  });
+}
+async function markCandidate(db, email, status, detail) {
+  await db.execute({
+    sql: `UPDATE email_candidates SET status = ?, detail = ?, updated_at = ? WHERE email = ?`,
+    args: [status, detail ?? null, (/* @__PURE__ */ new Date()).toISOString(), email.toLowerCase()]
+  });
+}
+async function candidatesForDomain(db, domain, opts = {}) {
+  const status = opts.status ?? "all";
+  const res = await db.execute({
+    sql: `SELECT * FROM email_candidates WHERE domain = ? ${status !== "all" ? "AND status = ?" : ""}
+     ORDER BY score DESC LIMIT ?`,
+    args: status !== "all" ? [domain, status, opts.limit ?? 500] : [domain, opts.limit ?? 500]
+  });
+  return res.rows;
 }
 async function dbStats(db) {
   const byStatus = await db.execute(
@@ -5723,6 +6079,11 @@ async function dbStats(db) {
             SUM(CASE WHEN email_valid = 0 THEN 1 ELSE 0 END) AS invalid,
             SUM(CASE WHEN email_valid IS NULL AND email IS NOT NULL THEN 1 ELSE 0 END) AS unverified
      FROM leads`
+  );
+  const peopleCount = await db.execute(`SELECT COUNT(*) AS people FROM people`);
+  const bySource = await db.execute(
+    `SELECT COALESCE(email_source, 'unknown') AS email_source, COUNT(*) AS n
+     FROM leads WHERE email IS NOT NULL GROUP BY email_source ORDER BY n DESC`
   );
   const interestRows = await db.execute(
     `SELECT interests FROM leads WHERE interests IS NOT NULL AND interests != '[]' LIMIT 5000`
@@ -5742,8 +6103,10 @@ async function dbStats(db) {
     byStatus: byStatus.rows,
     byCategory: byCategory.rows,
     byEmailType: byEmailType.rows,
+    bySource: bySource.rows,
     topInterests,
-    totals: totals.rows[0]
+    totals: totals.rows[0],
+    people: peopleCount.rows[0]?.people ?? 0
   };
 }
 async function recordRun(db, run) {
@@ -5763,6 +6126,421 @@ async function recordRun(db, run) {
       run.errors.length ? JSON.stringify(run.errors) : null
     ]
   });
+}
+
+// spider-leads/src/guess.ts
+var LEARNED_PATTERN_BOOST = 0.35;
+var PATTERN_PRIOR = {
+  "first.last": 0.5,
+  "firstlast": 0.18,
+  "f.last": 0.1,
+  "flast": 0.08,
+  "first": 0.06,
+  "first_last": 0.04,
+  "firstl": 0.02,
+  "last.first": 0.02
+};
+function learnPatterns(persons) {
+  const counts = {};
+  let total = 0;
+  for (const p of persons) {
+    const pat = patternOf(p.email, p.name);
+    if (!pat) continue;
+    counts[pat] = (counts[pat] ?? 0) + 1;
+    total++;
+  }
+  return { counts, total };
+}
+function candidatesForPerson(person, domain, learned) {
+  const name = person.name;
+  const parts = splitName(name);
+  if (!parts) return [];
+  const base = asciiName(name);
+  if (base.length < 4) return [];
+  const ordered = rankPatterns(learned);
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const { pattern, score } of ordered) {
+    const local = localPartFor(name, pattern);
+    if (!local) continue;
+    const email = local + "@" + domain;
+    if (!isValidEmail(email)) continue;
+    if (seen.has(email)) continue;
+    seen.add(email);
+    out.push({
+      email,
+      personName: name,
+      domain,
+      pattern,
+      score: clamp(score),
+      reason: score >= 0.6 ? "matches the domain's known convention (" + pattern + ")" : "common " + pattern + " pattern"
+    });
+  }
+  return out;
+}
+function rankPatterns(learned) {
+  const max = Math.max(1, learned.total);
+  return [.../* @__PURE__ */ new Set([...Object.keys(learned.counts), ...PATTERN_LABELS])].map((pattern) => {
+    const learnedScore = (learned.counts[pattern] ?? 0) / max;
+    const prior = PATTERN_PRIOR[pattern] ?? 0.01;
+    return { pattern, score: clamp(prior + learnedScore * LEARNED_PATTERN_BOOST) };
+  }).sort((a, b) => b.score - a.score);
+}
+function clamp(n) {
+  return Math.min(1, Math.max(0, Math.round(n * 100) / 100));
+}
+function guessLabel(score) {
+  if (score >= 0.75) return "high";
+  if (score >= 0.5) return "medium";
+  return "low";
+}
+
+// spider-leads/src/github.ts
+var API = "https://api.github.com";
+async function ghGet(path, base, token) {
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "spider-leads",
+    "X-GitHub-Api-Version": "2022-11-28"
+  };
+  if (token) headers.Authorization = "Bearer " + token;
+  const resp = await fetch(base.replace(/\/$/, "") + path, { headers });
+  if (resp.status === 404) return null;
+  if (resp.status === 403 || resp.status === 429) {
+    log.warn("GitHub API rate limit reached \u2014 skipping GitHub people discovery.");
+    return null;
+  }
+  if (!resp.ok) {
+    log.debug("GitHub API " + path + " failed (" + resp.status + ")");
+    return null;
+  }
+  return await resp.json();
+}
+async function findGithubPeople(org, opts = {}) {
+  const limit = opts.limit ?? 100;
+  const base = opts.base ?? API;
+  const members = await ghGet(`/orgs/${encodeURIComponent(org)}/members?per_page=${Math.min(limit, 100)}`, base, opts.token);
+  if (!members || !Array.isArray(members)) return [];
+  const profileCap = Math.min(limit, 25);
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  let consecutiveMisses = 0;
+  for (const m of members.slice(0, limit)) {
+    if (out.length >= profileCap) break;
+    const login = String(m.login ?? "");
+    if (!login || seen.has(login)) continue;
+    seen.add(login);
+    const profile = await ghGet(`/users/${encodeURIComponent(login)}`, base, opts.token);
+    if (!profile) {
+      consecutiveMisses++;
+      if (consecutiveMisses >= 3) break;
+      continue;
+    }
+    consecutiveMisses = 0;
+    const name = (profile.name ?? m.name ?? "").trim();
+    const email = (profile.email ?? m.email ?? "").trim();
+    if (!name && !email) continue;
+    out.push({
+      name: name || login,
+      // fall back to login when no display name
+      title: void 0,
+      // GitHub does not expose titles for members
+      email: email || void 0,
+      github: "https://github.com/" + login,
+      source: "github",
+      notes: profile.bio ? profile.bio.slice(0, 200) : void 0
+    });
+  }
+  return out;
+}
+
+// spider-leads/src/enrich.ts
+var progress = (opts, msg) => {
+  if (opts.onProgress) opts.onProgress(msg);
+  else log.info(msg);
+};
+async function storePersons(db, domain, persons, company) {
+  let newPeople = 0;
+  for (const p of persons) {
+    const outcome = await upsertPerson(db, domain, p, company);
+    if (outcome === "new") newPeople++;
+  }
+  return { newPeople };
+}
+function publicEmailPersons(persons) {
+  return persons.filter((p) => p.email && isValidEmail(p.email));
+}
+async function enrichDomain(db, cfg, domain, opts = {}) {
+  const result = {
+    domain,
+    people: 0,
+    candidatesGenerated: 0,
+    candidatesVerified: 0,
+    emailsFound: 0,
+    invalid: 0,
+    errors: [],
+    emails: []
+  };
+  const perPerson = Math.max(1, opts.perPerson ?? 3);
+  const verify = opts.verify !== false && !!cfg.plunkApiKey;
+  const meta = { ...opts.meta ?? {} };
+  if (!meta.company || !meta.category) {
+    const existing = await firstLeadForDomain(db, domain);
+    if (existing) {
+      meta.company = meta.company ?? existing.company ?? domain;
+      meta.category = meta.category ?? existing.category ?? void 0;
+      meta.subcategory = meta.subcategory ?? existing.subcategory ?? void 0;
+      meta.tier = meta.tier ?? existing.tier ?? void 0;
+      meta.confidence = meta.confidence ?? existing.confidence ?? void 0;
+      if (!meta.interests || meta.interests.length === 0) {
+        try {
+          const parsed = JSON.parse(existing.interests ?? "[]");
+          if (Array.isArray(parsed) && parsed.length > 0) meta.interests = parsed;
+        } catch {
+        }
+      }
+    }
+  }
+  meta.company = meta.company ?? domain;
+  const stored = await peopleForDomain(db, domain, { noEmail: true });
+  const fresh = (opts.people ?? []).filter((p) => !p.email || !isValidEmail(p.email));
+  if ((opts.people ?? []).length > 0 && !opts.dryRun) {
+    const { newPeople } = await storePersons(db, domain, opts.people, meta.company ?? domain);
+    result.people += newPeople;
+  }
+  let githubPeople = [];
+  for (const org of opts.githubOrgs ?? []) {
+    try {
+      progress(opts, "GitHub: fetching public members of " + org);
+      const members = await findGithubPeople(org, {
+        token: opts.githubToken,
+        base: opts.githubApiBase ?? cfg.githubApiBase
+      });
+      githubPeople = githubPeople.concat(members);
+    } catch (err) {
+      result.errors.push("github " + org + ": " + err.message);
+      log.warn("GitHub " + org + ": " + err.message);
+    }
+  }
+  if (githubPeople.length > 0 && !opts.dryRun) {
+    const { newPeople } = await storePersons(db, domain, githubPeople, meta.company ?? domain);
+    result.people += newPeople;
+    for (const p of publicEmailPersons(githubPeople)) {
+      await storePublicEmail(db, cfg, domain, p, opts, result, meta);
+    }
+  }
+  const pool = dedupePersons([
+    ...stored.map((r) => ({
+      name: r.name,
+      title: r.title ?? void 0,
+      linkedin: r.linkedin ?? void 0,
+      github: r.github ?? void 0,
+      source: r.source,
+      sourceUrl: r.source_url ?? void 0
+    })),
+    ...fresh,
+    ...githubPeople.filter((p) => !p.email)
+  ]);
+  result.people = Math.max(result.people, pool.length);
+  const noEmail = pool.filter((p) => !p.email || !isValidEmail(p.email));
+  if (noEmail.length === 0) {
+    progress(opts, domain + ": no people without emails \u2014 nothing to guess.");
+    return result;
+  }
+  const known = await knownEmailsForDomain(db, domain);
+  const learned = learnPatterns(known);
+  if (learned.total > 0) {
+    const top = Object.entries(learned.counts).sort((a, b) => b[1] - a[1])[0];
+    progress(opts, domain + ": learned pattern '" + top[0] + "' from " + learned.total + " known email(s)");
+  }
+  const existingEmails = new Set(await emailsForDomain(db, domain));
+  const invalidEmails = new Set(
+    (await candidatesForDomain(db, domain, { status: "invalid", limit: 5e3 })).map((c2) => c2.email)
+  );
+  const candidates = [];
+  const planned = /* @__PURE__ */ new Set();
+  for (const person of noEmail) {
+    const list = candidatesForPerson(person, domain, learned).slice(0, perPerson);
+    for (const c2 of list) {
+      if (planned.has(c2.email) || existingEmails.has(c2.email) || invalidEmails.has(c2.email)) continue;
+      planned.add(c2.email);
+      candidates.push(c2);
+    }
+  }
+  result.candidatesGenerated = candidates.length;
+  progress(opts, domain + ": " + noEmail.length + " person(s) \u2192 " + candidates.length + " candidate email(s)");
+  if (candidates.length === 0) return result;
+  if (!verify) {
+    let persisted = 0;
+    for (const c2 of candidates) {
+      if (!opts.dryRun) {
+        await upsertCandidate(db, c2);
+        persisted++;
+      }
+    }
+    if (persisted > 0) {
+      log.warn("Verification skipped (no PLUNK_API_KEY or verify disabled) \u2014 candidates saved as pending.");
+    }
+    return result;
+  }
+  if (opts.dryRun) return result;
+  progress(opts, "Verifying " + candidates.length + " candidate email(s) with Plunk\u2026");
+  const byEmail = new Map(candidates.map((c2) => [c2.email, c2]));
+  await verifyBatch(cfg, candidates.map((c2) => c2.email), {
+    concurrency: opts.concurrency ?? 5,
+    onResult: async (email, res, err) => {
+      result.candidatesVerified++;
+      const candidate = byEmail.get(email);
+      if (!candidate) return;
+      if (err) {
+        result.errors.push(email + ": " + err.message);
+        await upsertCandidate(db, candidate);
+        await markCandidate(db, email, "error", err.message);
+        return;
+      }
+      if (res.valid) {
+        if (!opts.dryRun) {
+          await upsertCandidate(db, candidate);
+          await markCandidate(db, email, "valid", "Plunk verified");
+          await upsertLead(db, {
+            email,
+            emailType: classifyEmailType(email),
+            emailSource: "guessed",
+            emailPattern: candidate.pattern,
+            emailScore: candidate.score,
+            personName: candidate.personName,
+            title: null,
+            phone: null,
+            linkedin: null,
+            company: meta.company ?? domain,
+            domain,
+            category: meta.category ?? null,
+            subcategory: meta.subcategory ?? null,
+            tier: meta.tier ?? null,
+            confidence: meta.confidence ?? candidate.score,
+            interests: meta.interests ?? [],
+            sourceUrl: null,
+            source: "guess",
+            raw: { guess: true, candidate }
+          });
+          await recordVerification(db, email, res);
+          result.emails.push({
+            email,
+            personName: candidate.personName,
+            pattern: candidate.pattern,
+            score: candidate.score
+          });
+          log.ok("  \u2713 guessed " + email + " (" + candidate.pattern + ", " + candidate.score + ")");
+          result.emailsFound++;
+        }
+      } else {
+        await upsertCandidate(db, candidate);
+        await markCandidate(db, email, "invalid", (res.reasons ?? []).join("; "));
+        result.invalid++;
+        log.debug("  \u2717 " + email + " invalid");
+      }
+    }
+  });
+  return result;
+}
+async function storePublicEmail(db, cfg, domain, person, opts, result, meta) {
+  const email = person.email.toLowerCase().trim();
+  if (!isValidEmail(email)) return;
+  if (opts.verify !== false && cfg.plunkApiKey) {
+    try {
+      const res = await verifyEmail(cfg, email);
+      if (!res.valid) {
+        result.invalid++;
+        log.debug("  \u2717 github " + email + " invalid \u2014 not stored");
+        return;
+      }
+      await upsertLead(db, {
+        email,
+        emailType: classifyEmailType(email),
+        emailSource: "github",
+        personName: person.name,
+        title: person.title ?? null,
+        phone: null,
+        linkedin: person.linkedin ?? null,
+        company: meta.company ?? domain,
+        domain,
+        category: meta.category ?? null,
+        subcategory: meta.subcategory ?? null,
+        tier: meta.tier ?? null,
+        confidence: meta.confidence ?? 0.8,
+        interests: meta.interests ?? [],
+        sourceUrl: person.sourceUrl ?? null,
+        source: "github",
+        raw: { github: true, person }
+      });
+      await recordVerification(db, email, res);
+    } catch (err) {
+      result.errors.push(email + ": " + err.message);
+      return;
+    }
+  } else {
+    await upsertLead(db, {
+      email,
+      emailType: classifyEmailType(email),
+      emailSource: "github",
+      personName: person.name,
+      title: person.title ?? null,
+      phone: null,
+      linkedin: person.linkedin ?? null,
+      company: meta.company ?? domain,
+      domain,
+      category: meta.category ?? null,
+      subcategory: meta.subcategory ?? null,
+      tier: meta.tier ?? null,
+      confidence: meta.confidence ?? 0.8,
+      interests: meta.interests ?? [],
+      sourceUrl: person.sourceUrl ?? null,
+      source: "github",
+      raw: { github: true, person }
+    });
+  }
+  result.emails.push({
+    email,
+    personName: person.name,
+    pattern: "published",
+    score: 0.8
+  });
+  result.emailsFound++;
+}
+function dedupePersons(persons) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const p of persons) {
+    const key = p.name.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
+}
+async function emailsForDomain(db, domain) {
+  try {
+    const res = await db.execute({
+      sql: "SELECT email FROM leads WHERE domain = ? AND email IS NOT NULL LIMIT 5000",
+      args: [domain]
+    });
+    return res.rows.map((r) => r.email.toLowerCase());
+  } catch {
+    return [];
+  }
+}
+async function firstLeadForDomain(db, domain) {
+  try {
+    const res = await db.execute({
+      sql: `SELECT company, category, subcategory, tier, confidence, interests FROM leads
+       WHERE domain = ? ORDER BY created_at DESC LIMIT 1`,
+      args: [domain]
+    });
+    const row = res.rows[0];
+    return row ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // spider-leads/src/hooks.ts
@@ -5787,6 +6565,8 @@ var defaultRunOptions = (cfg) => ({
   mode: "smart",
   extract: cfg.spiderExtract,
   verify: cfg.verifyOnHunt,
+  guessEmails: cfg.guessEmails,
+  perPerson: cfg.guessPerPerson,
   dryRun: false,
   concurrency: 4
 });
@@ -5830,16 +6610,18 @@ function normalizeContacts(contacts, pages) {
     const email = c2.email?.toLowerCase().trim() ?? "";
     const phone = c2.phone?.trim() ?? "";
     if (email && !isValidEmail(email)) continue;
-    if (!email && !phone) continue;
-    const key = email || "p:" + phone;
+    const name = c2.person_name?.trim() ?? "";
+    if (!email && !phone && !(name && (c2.title || c2.linkedin))) continue;
+    const key = email ? email : phone ? "p:" + phone : "n:" + name.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     out.push({
       email: email || void 0,
-      person_name: c2.person_name?.trim() || (email ? emailNameHint(email) ?? void 0 : void 0),
+      person_name: name || (email ? emailNameHint(email) ?? void 0 : void 0),
       title: c2.title?.trim() || void 0,
       phone: phone || void 0,
-      linkedin: c2.linkedin?.trim() || void 0
+      linkedin: c2.linkedin?.trim() || void 0,
+      github: c2.github?.trim() || void 0
     });
   }
   return out;
@@ -5878,6 +6660,10 @@ function emptyRun(target, source) {
     leadsUpdated: 0,
     leadsVerified: 0,
     leadsInvalid: 0,
+    peopleFound: 0,
+    guessesMade: 0,
+    guessedEmailsFound: 0,
+    guessedInvalid: 0,
     errors: []
   };
 }
@@ -5888,16 +6674,35 @@ function mergeRun(target, src) {
   target.leadsUpdated += src.leadsUpdated;
   target.leadsVerified += src.leadsVerified;
   target.leadsInvalid += src.leadsInvalid;
+  target.peopleFound += src.peopleFound;
+  target.guessesMade += src.guessesMade;
+  target.guessedEmailsFound += src.guessedEmailsFound;
+  target.guessedInvalid += src.guessedInvalid;
   target.errors.push(...src.errors);
 }
 async function storeAndVerify(db, cfg, domain, company, cat, contacts, pages, opts, summary) {
   const leads = normalizeContacts(contacts, pages);
-  summary.leadsFound += leads.length;
+  summary.leadsFound += leads.filter((c2) => c2.email || c2.phone).length;
   const freshEmails = [];
+  const persons = leads.filter((c2) => c2.person_name).map((c2) => ({
+    name: c2.person_name,
+    title: c2.title,
+    linkedin: c2.linkedin,
+    github: c2.github,
+    email: c2.email,
+    source: "page",
+    sourceUrl: pages[0]?.url
+  }));
+  if (!opts.dryRun && persons.length > 0) {
+    const { newPeople } = await storePersons(db, domain, persons, company);
+    summary.peopleFound += newPeople;
+  }
   for (const c2 of leads) {
+    if (!c2.email && !c2.phone) continue;
     const lead = {
       email: c2.email ?? null,
       emailType: c2.email ? classifyEmailType(c2.email) : null,
+      emailSource: c2.email ? "page" : "unknown",
       personName: c2.person_name ?? null,
       title: c2.title ?? null,
       phone: c2.phone ?? null,
@@ -5936,6 +6741,29 @@ async function storeAndVerify(db, cfg, domain, company, cat, contacts, pages, op
       const { verified, invalid } = await verifyEmails(db, cfg, freshEmails, { concurrency: opts.concurrency });
       summary.leadsVerified += verified;
       summary.leadsInvalid += invalid;
+    }
+  }
+  const peopleWithoutEmail = persons.filter((p) => !p.email);
+  if (opts.guessEmails && !opts.dryRun && peopleWithoutEmail.length > 0) {
+    if (!cfg.plunkApiKey) {
+      log.warn("GUESS_EMAILS is on but PLUNK_API_KEY is not set \u2014 skipping email inference.");
+    } else {
+      log.step("Inferring employee emails for " + peopleWithoutEmail.length + " person(s) at " + domain + "\u2026");
+      const res = await enrichDomain(db, cfg, domain, {
+        people: peopleWithoutEmail,
+        verify: true,
+        perPerson: opts.perPerson,
+        concurrency: opts.concurrency,
+        githubOrgs: opts.githubOrgs,
+        githubToken: cfg.githubToken,
+        meta: { company, ...cat }
+      });
+      summary.peopleFound = Math.max(summary.peopleFound, res.people);
+      summary.guessesMade += res.candidatesVerified;
+      summary.guessedEmailsFound += res.emailsFound;
+      summary.guessedInvalid += res.invalid;
+      summary.errors.push(...res.errors);
+      log.ok("Employee email inference: " + res.emailsFound + " found, " + res.invalid + " invalid.");
     }
   }
 }
@@ -6190,7 +7018,9 @@ function buildTools(cfg, db, opts = {}) {
           extract: cfg.spiderExtract,
           verify: false,
           dryRun: false,
-          concurrency: 4
+          concurrency: 4,
+          guessEmails: false,
+          perPerson: 3
         });
         return JSON.stringify({
           domain: extraction.domain,
@@ -6253,6 +7083,86 @@ function buildTools(cfg, db, opts = {}) {
         return JSON.stringify(res);
       }
     },
+    find_employees: {
+      name: "find_employees",
+      description: "Discover named employees at a company: crawls team/leadership/contact pages and returns people with name, title, LinkedIn and any published email. People without emails can then be fed to guess_emails to infer their addresses.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Company domain or URL, e.g. https://acme.com" },
+          limit: { type: "integer", description: "Max pages to scrape (default " + limit + ")" }
+        },
+        required: ["url"]
+      },
+      async run(args) {
+        const url = String(args.url ?? "");
+        if (!/^https?:\/\//.test(url)) {
+          return JSON.stringify({ error: "url must be absolute, e.g. https://acme.com" });
+        }
+        const extraction = await extractContactsFromSite(cfg, url, {
+          limit: Number(args.limit) || limit,
+          depth: 2,
+          mode: "smart",
+          extract: cfg.spiderExtract,
+          verify: false,
+          dryRun: false,
+          concurrency: 4,
+          guessEmails: false,
+          perPerson: 3
+        });
+        const contacts = normalizeContacts(extraction.contacts, extraction.pages);
+        const pageText = extraction.pages.map((p) => p.markdown).join("\n");
+        const githubOrgs = extractGithubOrgs(pageText);
+        const people = contacts.filter((c2) => c2.person_name).map((c2) => ({
+          name: c2.person_name,
+          title: c2.title,
+          linkedin: c2.linkedin,
+          github: c2.github,
+          email: c2.email,
+          source: "page",
+          sourceUrl: extraction.pages[0]?.url
+        }));
+        return JSON.stringify({
+          domain: extraction.domain,
+          pagesScraped: extraction.pages.length,
+          githubOrgs,
+          people: people.map((p) => ({
+            name: p.name,
+            title: p.title ?? null,
+            email: p.email ?? null,
+            linkedin: p.linkedin ?? null
+          })),
+          peopleWithoutEmail: people.filter((p) => !p.email).length
+        });
+      }
+    },
+    guess_emails: {
+      name: "guess_emails",
+      description: "Infer employee emails for a company domain: takes named people (discovered via find_employees or already stored), generates candidate addresses using the domain's learned email convention (first.last, firstlast, \u2026), verifies them with Plunk, and stores valid ones as leads. Returns each found email with its pattern and confidence.",
+      parameters: {
+        type: "object",
+        properties: {
+          domain: { type: "string", description: "Company domain, e.g. acme.com" },
+          per_person: { type: "integer", description: "Max candidates per person (default 3)" },
+          verify: { type: "boolean", description: "Verify candidates with Plunk (default true)" },
+          github_orgs: { type: "string", description: "Comma-separated GitHub orgs for extra people" }
+        },
+        required: ["domain"]
+      },
+      async run(args) {
+        const domain = String(args.domain ?? "").replace(/^https?:\/\//, "").replace(/\/$/, "");
+        if (!domain) return JSON.stringify({ error: "domain required" });
+        const githubOrgs = String(args.github_orgs ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+        const res = await enrichDomain(db, cfg, domain, {
+          verify: args.verify !== false,
+          perPerson: Number(args.per_person) || 3,
+          githubOrgs,
+          githubToken: cfg.githubToken,
+          meta: { company: domain }
+        });
+        return JSON.stringify(res);
+      }
+    },
     store_leads: {
       name: "store_leads",
       description: "Store leads in the Turso database (deduped by email). Accepts an array of leads with email (required for email leads), person_name, title, phone, linkedin, company, domain, category, interests (array of strings or {topic, confidence} objects), source_url. Emails are validated and classified (corporate/business/student/personal) automatically.",
@@ -6308,6 +7218,7 @@ function buildTools(cfg, db, opts = {}) {
           const lead = {
             email,
             emailType: classifyEmailType(email),
+            emailSource: "agent",
             personName: l.person_name ? String(l.person_name) : null,
             title: l.title ? String(l.title) : null,
             phone: l.phone ? String(l.phone) : null,
@@ -6336,13 +7247,14 @@ function buildTools(cfg, db, opts = {}) {
     },
     query_leads: {
       name: "query_leads",
-      description: "Query stored leads from the database. Filters: status (new/verified/invalid), category, email_type (corporate/business/student/personal), interest (topic substring). Returns rows.",
+      description: "Query stored leads from the database. Filters: status (new/verified/invalid), category, email_type (corporate/business/student/personal), email_source (page/guessed/github), interest (topic substring). Returns rows.",
       parameters: {
         type: "object",
         properties: {
           status: { type: "string" },
           category: { type: "string" },
           email_type: { type: "string" },
+          email_source: { type: "string" },
           interest: { type: "string" },
           limit: { type: "integer", description: "Max rows (default 20)" }
         }
@@ -6352,6 +7264,7 @@ function buildTools(cfg, db, opts = {}) {
           status: args.status ? String(args.status) : void 0,
           category: args.category ? String(args.category) : void 0,
           emailType: args.email_type ? String(args.email_type) : void 0,
+          emailSource: args.email_source ? String(args.email_source) : void 0,
           interest: args.interest ? String(args.interest) : void 0,
           limit: Number(args.limit) || 20
         });
@@ -6363,7 +7276,7 @@ function buildTools(cfg, db, opts = {}) {
 }
 
 // spider-leads/src/agent.ts
-var SYSTEM_PROMPT = "You are an autonomous B2B lead-generation agent. You have tools for web search, site crawling, contact extraction, company categorization (industry + interests), email verification (Plunk), storing leads (Turso), and querying stored leads.\nRules:\n- Use the tools to accomplish the user's objective. NEVER invent data: only report what tools return.\n- Typical flow: search_web to find targets \u2192 extract_contacts per target \u2192 categorize_company \u2192 store_leads \u2192 verify_email for new emails (when verification is wanted).\n- Never store fabricated emails. Email addresses must come from extraction results.\n- Keep tool arguments minimal and correct; parse tool results before deciding next steps.\n- When the objective is complete (or blocked), reply with a concise final summary: targets examined, leads found/stored/updated, verified/invalid counts, categories and top interests, and any failures.";
+var SYSTEM_PROMPT = "You are an autonomous B2B lead-generation agent. You have tools for web search, site crawling, contact extraction, employee discovery, email inference (pattern-based guessing + Plunk verification), company categorization (industry + interests), email verification (Plunk), storing leads (Turso), and querying stored leads.\nRules:\n- Use the tools to accomplish the user's objective. NEVER invent data: only report what tools return.\n- Typical flow: search_web to find targets \u2192 extract_contacts per target \u2192 find_employees to get names without emails \u2192 guess_emails to infer + verify their addresses \u2192 categorize_company \u2192 store_leads \u2192 verify_email for new emails (when verification is wanted).\n- Never store fabricated emails. Email addresses must come from extraction results or from guess_emails (which verifies every inferred address with Plunk before storing).\n- Keep tool arguments minimal and correct; parse tool results before deciding next steps.\n- When the objective is complete (or blocked), reply with a concise final summary: targets examined, leads found/stored/updated, verified/invalid counts, categories and top interests, and any failures.";
 function countToolCalls(calls) {
   return [...calls.entries()].map(([tool, count]) => ({ tool, count }));
 }
@@ -6893,8 +7806,11 @@ async function scoreFit(cfg, profile, job) {
 }
 export {
   CATEGORIES,
+  PATTERN_LABELS,
   buildProfile,
   buildTools,
+  candidatesForDomain,
+  candidatesForPerson,
   categorizeDomain,
   chatWithTools,
   classifyEmailType,
@@ -6905,28 +7821,46 @@ export {
   domainOf,
   draftOutreach,
   emailNameHint,
+  enrichDomain,
   ensureDb,
+  extractContactsFromSite,
   extractContactsSpider,
   extractEmails,
+  extractGithubOrgs,
+  extractGithubUsers,
+  extractNamedPeople,
+  findGithubPeople,
   getSiteLinks,
+  guessLabel,
   hunt,
   huntSearch,
   initSchema,
   isValidEmail,
+  knownEmailsForDomain,
+  learnPatterns,
   listLeads,
+  listPeople,
+  markCandidate,
   openDb,
   parseContacts,
+  patternOf,
+  peopleForDomain,
   pluginDataUrls,
+  rankPatterns,
   recordVerification,
   registerRuleSets,
   runAgent,
   scoreFit,
   scrapePage,
   searchPages,
+  splitName,
+  storePersons,
   tailorResume,
   toolDefs,
   unverifiedEmails,
+  upsertCandidate,
   upsertLead,
+  upsertPerson,
   validateJsonPlugin,
   verifyEmail,
   verifyStored

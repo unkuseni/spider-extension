@@ -1,19 +1,19 @@
 {
   "name": "spider-extension",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Spider Cloud browser extension + shared spider-leads pipeline (vendor bundle)",
   "type": "module",
   "scripts": {
     "build:vendor": "esbuild vendor/leads-entry.ts --bundle --format=esm --outfile=vendor/leads-core.js --alias:@libsql/client=@libsql/client/web --platform=browser --target=chrome116 --sourcemap --legal-comments=none",
-    "typecheck": "cd spider-leads && tsc --noEmit",
+    "typecheck": "npm --prefix spider-leads run typecheck",
     "mock": "node spider-leads/scripts/mock-api.ts",
     "build:firefox": "node scripts/build-firefox.mjs",
     "lint:firefox": "web-ext lint --source-dir dist/firefox",
     "run:firefox": "web-ext run --source-dir dist/firefox",
     "build:pdf": "node scripts/build-pdf.mjs",
     "build:safari": "node scripts/build-safari.mjs",
-    "test": "node --test"
+    "test": "node --test --test-concurrency=1"
   },
   "devDependencies": {
     "@libsql/client": "^0.17.4",

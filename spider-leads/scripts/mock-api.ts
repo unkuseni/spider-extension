@@ -9,6 +9,32 @@ import { pathToFileURL } from "node:url";
 
 const PORT = Number(process.env.PORT ?? 8787);
 
+export interface MockOptions {
+  /** When set, POST /v1/verify only returns valid:true if the local part matches this pattern's shape. */
+  verifyPattern?: string;
+  /** Hostnames the verifyPattern check applies to (empty/undefined = all hosts). */
+  verifyHosts?: string[];
+}
+
+/** Regex describing the shape of a pattern's email local part (for deterministic verify tests). */
+function patternShapeRe(pattern: string): RegExp | null {
+  switch (pattern) {
+    case "first.last":
+    case "f.last":
+    case "last.first":
+      return /^[a-z0-9]+\.[a-z0-9]+$/;
+    case "first_last":
+      return /^[a-z0-9]+_[a-z0-9]+$/;
+    case "firstlast":
+    case "flast":
+    case "firstl":
+    case "first":
+      return /^[a-z0-9]+$/;
+    default:
+      return null;
+  }
+}
+
 const json = (res: http.ServerResponse, code: number, body: unknown) => {
   res.writeHead(code, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
@@ -50,6 +76,7 @@ Admissions: admissions@${host}
 - Sarah Chen — VP Engineering — sarah.chen@${host}
 - James Ruiz — Head of Sales — james.ruiz@${host} — +1 (415) 555-0192
 - Priya Kapoor — CTO — priya.kapoor@${host} — https://linkedin.com/in/priya-kapoor
+- Dana Fox — Product Manager
 
 ## Engineers
 - Mike Williams — m.williams@${host}
@@ -99,12 +126,31 @@ function linksFor(url: string): { url: string }[] {
   ];
 }
 
-export function createMockHandler() {
+export function createMockHandler(opts: MockOptions = {}) {
   return async (req: http.IncomingMessage, res: http.ServerResponse) => {
   await sleep(50); // simulate network latency
   const url = req.url ?? "/";
   const method = req.method ?? "GET";
+  const path = url.split("?")[0];
   try {
+    // --- GitHub public data (employee discovery: org members + profiles) ---
+    if (method === "GET" && /^\/orgs\/[^/]+\/members/.test(path)) {
+      const org = decodeURIComponent(path.split("/")[2] ?? "");
+      if (org === "acme-inc") {
+        return json(res, 200, [{ login: "dana" }, { login: "sam" }]);
+      }
+      return json(res, 404, { error: `mock: unknown org ${org}` });
+    }
+    if (method === "GET" && /^\/users\/[^/]+/.test(path)) {
+      const login = decodeURIComponent(path.split("/")[2] ?? "");
+      const roster: Record<string, { login: string; name: string; email: string | null; bio?: string }> = {
+        dana: { login: "dana", name: "Dana Fox", email: "dana.fox@acme.com", bio: "Product Manager at Acme" },
+        sam: { login: "sam", name: "Sam Patel", email: null, bio: "Software Engineer" },
+      };
+      const profile = roster[login];
+      if (profile) return json(res, 200, profile);
+      return json(res, 404, { error: `mock: unknown user ${login}` });
+    }
     if (method === "POST" && url === "/links") {
       const body = await readBody(req);
       return json(res, 200, linksFor(body.url ?? ""));
@@ -148,12 +194,14 @@ export function createMockHandler() {
         { email: `sarah.chen@${host}`, person_name: "Sarah Chen", title: "VP Engineering", phone: "+1 (415) 555-0192" },
         { email: `james.ruiz@${host}`, person_name: "James Ruiz", title: "Head of Sales" },
         { email: `priya.kapoor@${host}`, person_name: "Priya Kapoor", title: "CTO", linkedin: `https://linkedin.com/in/priya-kapoor` },
+        { person_name: "Dana Fox", title: "Product Manager" },
         { email: `hello@${host}`, title: "General" },
       ]);
     }
     if (method === "POST" && url === "/v1/verify") {
       const body = await readBody(req);
       const email = body.email ?? "";
+      const local = email.split("@")[0] ?? "";
       const domain = email.split("@")[1] ?? "";
       const data = {
         email,
@@ -176,6 +224,18 @@ export function createMockHandler() {
       }
       if (domain === "nonexistent.fake") {
         return json(res, 200, { success: true, data: { ...data, valid: false, hasMxRecords: false, reasons: ["Domain does not accept email"] } });
+      }
+      // Optional deterministic verify-pattern mode (used by enrichment tests).
+      if (opts.verifyPattern) {
+        const host = hostnameOf(domain);
+        const inScope = !opts.verifyHosts || opts.verifyHosts.length === 0 || opts.verifyHosts.includes(host);
+        if (inScope) {
+          const re = patternShapeRe(opts.verifyPattern);
+          const ok = re ? re.test(local) : false;
+          if (!ok) {
+            return json(res, 200, { success: true, data: { ...data, valid: false, hasMxRecords: true, reasons: ["Catch-all pattern rejected"] } });
+          }
+        }
       }
       return json(res, 200, { success: true, data });
     }
@@ -283,6 +343,7 @@ export function createMockHandler() {
           contacts: [
             { email: "sarah.chen@" + host, person_name: "Sarah Chen", title: "VP Engineering", phone: "+1 (415) 555-0192", linkedin: "https://linkedin.com/in/sarah-chen" },
             { email: "james.ruiz@" + host, person_name: "James Ruiz", title: "Head of Sales" },
+            { person_name: "Dana Fox", title: "Product Manager" },
             { email: "hello@" + host, title: "General" },
           ],
         });
@@ -305,8 +366,8 @@ export interface MockApi {
 }
 
 /** Start the mock on an ephemeral (or given) port. */
-export async function startMockApi(port = 0): Promise<MockApi> {
-  const server = http.createServer(createMockHandler());
+export async function startMockApi(port = 0, opts: MockOptions = {}): Promise<MockApi> {
+  const server = http.createServer(createMockHandler(opts));
   await new Promise<void>((resolve) => server.listen(port, resolve));
   const address = server.address();
   const actual = typeof address === "object" && address ? address.port : port;

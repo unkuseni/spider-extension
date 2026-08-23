@@ -4,6 +4,11 @@ export type ExtractMode = "auto" | "local" | "spider";
 export type RequestMode = "smart" | "http" | "browser";
 export type LeadStatus = "new" | "verified" | "invalid" | "error";
 export type EmailType = "corporate" | "business" | "student" | "personal" | "unknown";
+/** How a lead's email was obtained. */
+export type EmailSource = "page" | "guessed" | "github" | "agent" | "user" | "unknown";
+
+/** Status of an inferred email candidate. */
+export type CandidateStatus = "pending" | "valid" | "invalid" | "error";
 
 export interface Interest {
   topic: string;
@@ -22,6 +27,47 @@ export interface ContactRecord {
   title?: string;
   phone?: string;
   linkedin?: string;
+  github?: string;
+}
+
+/** A named human at a company — may not have a published email yet. */
+export interface Person {
+  name: string;
+  title?: string;
+  /** Publicly listed email (e.g. GitHub profile email). */
+  email?: string;
+  linkedin?: string;
+  github?: string;
+  /** Where the person was found: page | github | user */
+  source: string;
+  sourceUrl?: string;
+  /** Extra evidence (page text, bio…), best-effort. */
+  notes?: string;
+}
+
+/** An inferred (pattern-generated) email address for a person at a domain. */
+export interface EmailCandidate {
+  email: string;
+  personName: string;
+  domain: string;
+  /** Pattern label, e.g. "first.last", "flast"… */
+  pattern: string;
+  /** 0-1 heuristic confidence (learned pattern > generic). */
+  score: number;
+  /** Why this candidate was generated. */
+  reason: string;
+}
+
+export interface EmployeeEnrichResult {
+  domain: string;
+  people: number;
+  candidatesGenerated: number;
+  candidatesVerified: number;
+  emailsFound: number;
+  invalid: number;
+  errors: string[];
+  /** The emails this run found (guessed + published), with pattern + score. */
+  emails: { email: string; personName: string; pattern: string; score: number }[];
 }
 
 export interface Categorization {
@@ -175,6 +221,12 @@ export interface JsonPluginManifest {
 export interface Lead {
   email: string | null;
   emailType: EmailType | null;
+  /** How the email was obtained: published on a page vs pattern-inferred. */
+  emailSource: EmailSource;
+  /** Pattern label for inferred emails (e.g. "first.last"). */
+  emailPattern?: string | null;
+  /** Heuristic confidence (0-1) for inferred emails. */
+  emailScore?: number | null;
   personName: string | null;
   title: string | null;
   phone: string | null;
@@ -201,5 +253,11 @@ export interface RunSummary {
   leadsUpdated: number;
   leadsVerified: number;
   leadsInvalid: number;
+  /** Named people discovered (before email guessing). */
+  peopleFound: number;
+  /** Candidate emails generated + verified. */
+  guessesMade: number;
+  guessedEmailsFound: number;
+  guessedInvalid: number;
   errors: string[];
 }

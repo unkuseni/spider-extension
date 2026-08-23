@@ -244,6 +244,14 @@
         <input type="checkbox" id="leadsVerifyOnHunt" checked />
         <span>Verify new emails with Plunk automatically after hunting</span>
       </label>
+      <label class="checkbox-label">
+        <input type="checkbox" id="leadsGuessEmails" />
+        <span>Infer employee emails (pattern-based) for people found without one</span>
+      </label>
+      <div class="form-group">
+        <label class="label" for="leadsGuessPerPerson">Max candidate addresses per person (inference)</label>
+        <input type="number" id="leadsGuessPerPerson" class="input" value="3" min="1" max="8" style="max-width:120px" />
+      </div>
       <div class="form-group" style="margin-top:10px">
         <button id="saveLeadsBtn" class="btn btn-primary">Save Lead Finder Settings</button>
         <span id="leadsStatus" class="status-msg"></span>

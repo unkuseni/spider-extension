@@ -135,6 +135,20 @@ crawled, leads found/verified/invalid, errors. Useful for auditing and cost trac
 Leads are keyed by **lowercased email** (unique index). Re-hunting the same site updates
 existing rows instead of creating duplicates (`new` vs `updated` in the run summary).
 
+### People & inferred emails
+
+Named people found on team/leadership/contact pages (name, title, LinkedIn, GitHub — with
+or without an email) are kept in a separate **`people`** table (dedup by `domain+name`).
+For people with no published address, the `enrich` command (or `hunt --guess`) **infers**
+one: it learns the domain's convention from already-known valid emails (`first.last`,
+`firstlast`, …), generates a few candidates per person, and verifies them with Plunk
+**before storing** — so valid ones are saved as leads with `email_source='guessed'`,
+`email_pattern`, and `email_score`. Invalid candidates are recorded in `email_candidates`
+so they're never re-guessed. GitHub org members (opt-in via `--github` + `GITHUB_TOKEN`)
+are pulled the same way; their public emails become `email_source='github'` leads.
+Heads-up: these are **guesses** — Plunk confirms deliverability, not correctness, so
+double-check before outreach.
+
 ---
 
 ## 5. Setup — step by step
@@ -302,14 +316,23 @@ you ──▶ "find fintech companies interested in AI and verify their emails"
 
 ## 10. The database (Turso)
 
-Two tables. The `leads` table columns:
+Four tables. The `leads` table columns:
 
 | Group | Columns |
 | --- | --- |
 | Identity | `id`, `email` (unique, lowercased), `person_name`, `title`, `phone`, `linkedin`, `company`, `domain` |
 | Classification | `category`, `subcategory`, `tier`, `confidence`, `email_type`, `interests` (JSON) |
-| Provenance | `source` (hunt/search/agent), `source_url`, `raw_data` (JSON), `created_at`, `updated_at` |
+| Provenance | `source` (hunt/search/agent/guess/github), `source_url`, `raw_data` (JSON), `created_at`, `updated_at` |
+| Email origin | `email_source` (page/guessed/github/agent/user), `email_pattern`, `email_score` (how the address was obtained) |
 | Verification | `status` (new/verified/invalid/error), `email_valid`, `is_disposable`, `is_personal_email`, `has_mx_records`, `is_typo`, `plunk_reasons`, `verified_at` |
+
+`people` — named individuals (even with no published email), deduped per `domain+name`:
+`name`, `title`, `email`, `linkedin`, `github`, `domain`, `company`, `source`, `source_url`, `notes`.
+This is the employee directory that pattern-based email inference works from.
+
+`email_candidates` — every inferred address and its verification outcome:
+`email` (PK), `person_name`, `domain`, `pattern`, `score`, `reason`, `status`
+(pending/valid/invalid/error), `detail`. Invalid candidates are never re-guessed.
 
 `runs` — one row per execution: target, pages, leads found/verified/invalid, errors.
 

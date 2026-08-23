@@ -4,7 +4,7 @@ import type { Client } from "@libsql/client";
 import type { Config } from "./config.ts";
 import { requireSpiderKey } from "./config.ts";
 import type {
-  Categorization, ContactRecord, PageContent, RequestMode, RunSummary,
+  Categorization, ContactRecord, PageContent, Person, RequestMode, RunSummary,
 } from "./types.ts";
 import {
   extractContactsSpider, getSiteLinks, scrapePage, searchPages,
@@ -13,6 +13,7 @@ import { classifyEmailType, filterContactUrls, isValidEmail, domainOf, emailName
 import { categorizeDomain, parseContacts } from "./ai.ts";
 import { verifyBatch } from "./plunk.ts";
 import { initSchema, openDb, recordRun, recordVerification, upsertLead, unverifiedEmails } from "./db.ts";
+import { enrichDomain, storePersons } from "./enrich.ts";
 import { fireHook } from "./hooks.ts";
 import type { Plugin } from "./types.ts";
 import { log } from "./log.ts";
@@ -23,6 +24,12 @@ export interface RunOptions {
   mode: RequestMode;
   extract: "auto" | "local" | "spider";
   verify: boolean;
+  /** Infer + verify employee emails from discovered names (pattern guessing). */
+  guessEmails: boolean;
+  /** Max candidate addresses per person. */
+  perPerson: number;
+  /** GitHub org names to pull public members from (opt-in). */
+  githubOrgs?: string[];
   dryRun: boolean;
   urlFilter?: string;
   concurrency: number;
@@ -36,6 +43,8 @@ export const defaultRunOptions = (cfg: Config): RunOptions => ({
   mode: "smart",
   extract: cfg.spiderExtract,
   verify: cfg.verifyOnHunt,
+  guessEmails: cfg.guessEmails,
+  perPerson: cfg.guessPerPerson,
   dryRun: false,
   concurrency: 4,
 });
@@ -92,16 +101,22 @@ export function normalizeContacts(contacts: ContactRecord[], pages: PageContent[
     const email = c.email?.toLowerCase().trim() ?? "";
     const phone = c.phone?.trim() ?? "";
     if (email && !isValidEmail(email)) continue;
-    if (!email && !phone) continue;
-    const key = email || "p:" + phone;
+    // Keep named people even without an email/phone — they feed employee
+    // discovery (they are stored in the people table, not as leads).
+    const name = c.person_name?.trim() ?? "";
+    if (!email && !phone && !(name && (c.title || c.linkedin))) continue;
+    // Dedupe by email, else phone, else name — the empty-string constants must
+    // not become the key (email ? … : phone ? … : name).
+    const key = email ? email : phone ? "p:" + phone : "n:" + name.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     out.push({
       email: email || undefined,
-      person_name: c.person_name?.trim() || (email ? emailNameHint(email) ?? undefined : undefined),
+      person_name: name || (email ? emailNameHint(email) ?? undefined : undefined),
       title: c.title?.trim() || undefined,
       phone: phone || undefined,
       linkedin: c.linkedin?.trim() || undefined,
+      github: c.github?.trim() || undefined,
     });
   }
   void pages;
@@ -149,6 +164,10 @@ function emptyRun(target: string, source: string): RunSummary {
     leadsUpdated: 0,
     leadsVerified: 0,
     leadsInvalid: 0,
+    peopleFound: 0,
+    guessesMade: 0,
+    guessedEmailsFound: 0,
+    guessedInvalid: 0,
     errors: [],
   };
 }
@@ -160,6 +179,10 @@ function mergeRun(target: RunSummary, src: RunSummary): void {
   target.leadsUpdated += src.leadsUpdated;
   target.leadsVerified += src.leadsVerified;
   target.leadsInvalid += src.leadsInvalid;
+  target.peopleFound += src.peopleFound;
+  target.guessesMade += src.guessesMade;
+  target.guessedEmailsFound += src.guessedEmailsFound;
+  target.guessedInvalid += src.guessedInvalid;
   target.errors.push(...src.errors);
 }
 
@@ -175,13 +198,33 @@ async function storeAndVerify(
   summary: RunSummary
 ): Promise<void> {
   const leads = normalizeContacts(contacts, pages);
-  summary.leadsFound += leads.length;
+  summary.leadsFound += leads.filter((c) => c.email || c.phone).length;
   const freshEmails: string[] = [];
 
+  // Named humans (with or without a published email) go into the people table —
+  // this is the employee directory used by pattern-based email inference.
+  const persons: Person[] = leads
+    .filter((c) => c.person_name)
+    .map((c) => ({
+      name: c.person_name!,
+      title: c.title,
+      linkedin: c.linkedin,
+      github: c.github,
+      email: c.email,
+      source: "page",
+      sourceUrl: pages[0]?.url,
+    }));
+  if (!opts.dryRun && persons.length > 0) {
+    const { newPeople } = await storePersons(db, domain, persons, company);
+    summary.peopleFound += newPeople;
+  }
+
   for (const c of leads) {
+    if (!c.email && !c.phone) continue; // name-only people are handled above
     const lead = {
       email: c.email ?? null,
       emailType: c.email ? classifyEmailType(c.email) : null,
+      emailSource: c.email ? ("page" as const) : ("unknown" as const),
       personName: c.person_name ?? null,
       title: c.title ?? null,
       phone: c.phone ?? null,
@@ -221,6 +264,32 @@ async function storeAndVerify(
       const { verified, invalid } = await verifyEmails(db, cfg, freshEmails, { concurrency: opts.concurrency });
       summary.leadsVerified += verified;
       summary.leadsInvalid += invalid;
+    }
+  }
+
+  // Employee email inference: names without published emails → candidate
+  // addresses → Plunk verification → valid ones stored as leads.
+  const peopleWithoutEmail = persons.filter((p) => !p.email);
+  if (opts.guessEmails && !opts.dryRun && peopleWithoutEmail.length > 0) {
+    if (!cfg.plunkApiKey) {
+      log.warn("GUESS_EMAILS is on but PLUNK_API_KEY is not set — skipping email inference.");
+    } else {
+      log.step("Inferring employee emails for " + peopleWithoutEmail.length + " person(s) at " + domain + "…");
+      const res = await enrichDomain(db, cfg, domain, {
+        people: peopleWithoutEmail,
+        verify: true,
+        perPerson: opts.perPerson,
+        concurrency: opts.concurrency,
+        githubOrgs: opts.githubOrgs,
+        githubToken: cfg.githubToken,
+        meta: { company, ...cat },
+      });
+      summary.peopleFound = Math.max(summary.peopleFound, res.people);
+      summary.guessesMade += res.candidatesVerified;
+      summary.guessedEmailsFound += res.emailsFound;
+      summary.guessedInvalid += res.invalid;
+      summary.errors.push(...res.errors);
+      log.ok("Employee email inference: " + res.emailsFound + " found, " + res.invalid + " invalid.");
     }
   }
 }

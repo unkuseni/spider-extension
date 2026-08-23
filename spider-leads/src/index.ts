@@ -4,12 +4,14 @@
 import type { Config } from "./config.ts";
 import { extractMode, loadConfig, requestMode } from "./config.ts";
 import {
-  defaultRunOptions, ensureDb, hunt, huntSearch, verifyStored,
+  defaultRunOptions, ensureDb, extractContactsFromSite, hunt, huntSearch, verifyStored,
 } from "./pipeline.ts";
 import { runAgent } from "./agent.ts";
+import { enrichDomain } from "./enrich.ts";
 import { discoverPluginsDir, installJsonPluginFile, loadPlugins, resolveNamedFilter } from "./plugins.ts";
-import type { Plugin } from "./types.ts";
-import { dbStats, listLeads } from "./db.ts";
+import type { Plugin, Person } from "./types.ts";
+import { dbStats, listLeads, listPeople } from "./db.ts";
+import { domainOf, toRoot } from "./extract.ts";
 import { log } from "./log.ts";
 
 interface Flag {
@@ -28,14 +30,21 @@ const FLAGS: Flag[] = [
   { name: "status", alias: "s", takesValue: true },
   { name: "category", alias: "C", takesValue: true },
   { name: "type", alias: "t", takesValue: true },
+  { name: "source", alias: "S", takesValue: true },
   { name: "interest", alias: "i", takesValue: true },
   { name: "format", alias: "F", takesValue: true },
   { name: "output", alias: "o", takesValue: true },
   { name: "plugins-dir", takesValue: true },
   { name: "exporter", takesValue: true },
   { name: "query", alias: "q", takesValue: true },
+  { name: "per-person", takesValue: true },
+  { name: "github", takesValue: true },
+  { name: "domain", takesValue: true },
   { name: "verify", takesValue: false },
   { name: "no-verify", takesValue: false },
+  { name: "guess", takesValue: false },
+  { name: "no-guess", takesValue: false },
+  { name: "no-email", takesValue: false },
   { name: "dry-run", takesValue: false },
   { name: "json", takesValue: false },
   { name: "verbose", alias: "v", takesValue: false },
@@ -89,8 +98,12 @@ COMMANDS
   init-db                 Create the leads + runs tables in the database
   hunt <url|domain...>    Crawl sites and extract leads (links → contact pages → AI extraction)
   search <query>          Search the web and extract leads from result pages
+  enrich <domain...>      Infer employee emails: discover people, learn the domain's email
+                          pattern, generate candidates, verify with Plunk, store valid ones
+  people                  List discovered people (--domain X, --no-email)
   agent <objective>       Let the AI drive the whole workflow via tool calling
-                          (search_web, extract_contacts, categorize_company, verify_email, store_leads…)
+                          (search_web, extract_contacts, find_employees, guess_emails,
+                           categorize_company, verify_email, store_leads…)
   verify                  Verify stored leads with Plunk (default: status 'new')
   list                    Show stored leads
   stats                   Database summary (counts by status and category)
@@ -106,25 +119,33 @@ FLAGS
   -e, --extract MODE   auto | local | spider — how contacts are extracted (default auto)
   -f, --filter REGEX   Only extract from URLs matching REGEX
   -c, --concurrency N  Concurrent fetches / verifications (default 4-5)
+      --guess          Infer employee emails (pattern-based) after hunting; verify with Plunk
+      --no-guess       Disable employee email inference
+      --per-person N   Max candidate addresses to try per person (default 3)
+      --github ORGS    Comma-separated GitHub orgs to pull public members from (enrich)
       --max-turns N    Agent turn budget (default 20)
       --plugins-dir P   Plugin directory (default: ./plugins or $SPIDER_PLUGINS_DIR)
       --exporter ID     Use a plugin exporter for 'export' (e.g. --exporter jsonl)
   -s, --status ST      Filter by status: new | verified | invalid | error
   -C, --category CAT   Filter by industry category
   -t, --type TYPE      Filter by email type: corporate | business | student | personal
+  -S, --source SOURCE  Filter by email source: page | guessed | github | agent | user
   -i, --interest TOPIC Filter by interest topic (substring match)
+      --domain D       Filter by domain (people command)
+      --no-email       Only people without a published email (people command)
   -F, --format FMT     csv | json (export)
   -o, --output FILE    Output file (export)
   -q, --query Q        Query text (search)
       --no-verify      Don't verify emails after hunting
       --dry-run        Rehearse a run: fetch + extract, but write nothing to the DB
-      --json           Machine-readable output (list/stats)
+      --json           Machine-readable output (list/stats/people)
   -v, --verbose        Verbose debug logging
   -h, --help           This help
 
 ENV (.env — see .env.example)
   SPIDER_API_KEY  TURSO_URL / TURSO_AUTH_TOKEN  PLUNK_API_KEY
   OPENAI_API_KEY (any OpenAI-compatible endpoint)  VERIFY_ON_HUNT
+  GUESS_EMAILS (true to infer employee emails after hunts)  GITHUB_TOKEN (optional)
 `;
 
 function numFlag(flags: Record<string, string | boolean>, name: string, def: number): number {
@@ -133,15 +154,35 @@ function numFlag(flags: Record<string, string | boolean>, name: string, def: num
   return Number.isFinite(n) && n > 0 ? n : def;
 }
 
-function printRunSummary(s: { target: string; source: string; pagesCrawled: number; leadsFound: number; leadsNew: number; leadsUpdated: number; leadsVerified: number; leadsInvalid: number; errors: string[] }): void {
+function printRunSummary(s: { target: string; source: string; pagesCrawled: number; leadsFound: number; leadsNew: number; leadsUpdated: number; leadsVerified: number; leadsInvalid: number; peopleFound?: number; guessesMade?: number; guessedEmailsFound?: number; guessedInvalid?: number; errors: string[] }): void {
   log.raw("");
   log.raw(`┌─ Run complete: ${s.target} (${s.source})`);
   log.raw(`│  pages crawled : ${s.pagesCrawled}`);
   log.raw(`│  leads found   : ${s.leadsFound}  (new ${s.leadsNew}, updated ${s.leadsUpdated})`);
   log.raw(`│  verified      : ${s.leadsVerified}`);
   log.raw(`│  invalid       : ${s.leadsInvalid}`);
+  if (s.peopleFound) log.raw(`│  people        : ${s.peopleFound}`);
+  if (s.guessesMade) {
+    log.raw(`│  email guesses : ${s.guessesMade} verified → ${s.guessedEmailsFound} found, ${s.guessedInvalid} invalid`);
+  }
   if (s.errors.length) log.raw(`│  errors        : ${s.errors.length} (see --verbose)`);
   log.raw(`└─ run id: ${(s as any).id ?? "-"}`);
+}
+
+function printPeople(rows: any[]): void {
+  if (rows.length === 0) {
+    log.info("No people found.");
+    return;
+  }
+  const cols = ["name", "title", "email", "domain", "source", "linkedin", "github"];
+  const widths = cols.map((c) => Math.max(c.length, ...rows.map((r) => String(r[c] ?? "").length)));
+  const pad = (s: string, w: number) => s.padEnd(w);
+  log.raw(cols.map((c, i) => pad(c, widths[i])).join("  "));
+  log.raw(cols.map((_, i) => "-".repeat(widths[i])).join("  "));
+  for (const r of rows) {
+    log.raw(cols.map((c, i) => pad(String(r[c] ?? "").slice(0, 40), widths[i])).join("  "));
+  }
+  log.raw(`${rows.length} row(s)`);
 }
 
 function printLeads(rows: any[]): void {
@@ -149,14 +190,14 @@ function printLeads(rows: any[]): void {
     log.info("No leads found.");
     return;
   }
-  const cols = ["email", "person_name", "title", "company", "type", "category", "status", "email_valid"];
+  const cols = ["email", "src", "person_name", "title", "company", "type", "category", "status", "email_valid"];
   const widths = cols.map((c) => Math.max(c.length, ...rows.map((r) => String(r[c] ?? "").length)));
   const pad = (s: string, w: number) => s.padEnd(w);
   log.raw(cols.map((c, i) => pad(c, widths[i])).join("  "));
   log.raw(cols.map((_, i) => "-".repeat(widths[i])).join("  "));
   for (const r of rows) {
     const vals = cols.map((c, i) => {
-      let v = String(c === "type" ? (r as any).email_type ?? "" : r[c] ?? "");
+      let v = String(c === "type" ? (r as any).email_type ?? "" : c === "src" ? (r as any).email_source ?? "" : r[c] ?? "");
       if (c === "email_valid") v = v === "1" ? "✓" : v === "0" ? "✗" : "";
       return pad(v, widths[i]);
     });
@@ -209,6 +250,11 @@ async function main(): Promise<number> {
         opts.verify = flags["no-verify"] ? false : cfg.verifyOnHunt;
         opts.dryRun = !!flags["dry-run"];
         opts.concurrency = numFlag(flags, "concurrency", opts.concurrency);
+        opts.guessEmails = flags["no-guess"] ? false : flags.guess ? true : cfg.guessEmails;
+        opts.perPerson = numFlag(flags, "per-person", cfg.guessPerPerson);
+        if (typeof flags.github === "string") {
+          opts.githubOrgs = flags.github.split(",").map((s) => s.trim()).filter(Boolean);
+        }
         if (typeof flags.filter === "string") {
           opts.urlFilter = resolveNamedFilter(plugins, flags.filter) ?? flags.filter;
           if (flags.filter.startsWith("@") && opts.urlFilter === flags.filter) {
@@ -235,6 +281,11 @@ async function main(): Promise<number> {
         opts.verify = flags["no-verify"] ? false : cfg.verifyOnHunt;
         opts.dryRun = !!flags["dry-run"];
         opts.concurrency = numFlag(flags, "concurrency", opts.concurrency);
+        opts.guessEmails = flags["no-guess"] ? false : flags.guess ? true : cfg.guessEmails;
+        opts.perPerson = numFlag(flags, "per-person", cfg.guessPerPerson);
+        if (typeof flags.github === "string") {
+          opts.githubOrgs = flags.github.split(",").map((s) => s.trim()).filter(Boolean);
+        }
         opts.plugins = plugins;
         const db = await ensureDb(cfg);
         const summary = await huntSearch(db, cfg, query, opts);
@@ -265,6 +316,77 @@ async function main(): Promise<number> {
           if (p.exporters.length) log.raw("  exporters: " + p.exporters.map((e) => e.id + " (" + e.label + ")").join(", "));
         }
         for (const e of errors) log.warn("Failed: " + e);
+        return 0;
+      }
+      case "enrich": {
+        if (positionals.length === 0) {
+          throw new Error("enrich needs at least one domain. e.g. spider-leads enrich acme.com");
+        }
+        if (!cfg.plunkApiKey) {
+          log.warn("PLUNK_API_KEY is not set — candidates will be saved as pending (not verified).");
+        }
+        const db = await ensureDb(cfg);
+        const perPerson = numFlag(flags, "per-person", cfg.guessPerPerson);
+        const githubOrgs = typeof flags.github === "string"
+          ? flags.github.split(",").map((s) => s.trim()).filter(Boolean)
+          : [];
+        const doExtract = typeof flags.extract === "string";
+        for (const target of positionals) {
+          const domain = domainOf(toRoot(target));
+          log.step("Enriching " + domain);
+
+          // Optional fresh page extraction to discover new people before guessing.
+          let freshPeople: Person[] = [];
+          if (doExtract) {
+            const opts = defaultRunOptions(cfg);
+            opts.limit = numFlag(flags, "limit", opts.limit);
+            opts.extract = extractMode(flags.extract as string);
+            opts.verify = false;
+            const extraction = await extractContactsFromSite(cfg, target, opts);
+            freshPeople = extraction.contacts
+              .filter((c: any) => c.person_name && !c.email)
+              .map((c: any) => ({
+                name: c.person_name,
+                title: c.title,
+                linkedin: c.linkedin,
+                email: c.email,
+                source: "page",
+                sourceUrl: extraction.pages[0]?.url,
+              }));
+            log.info(extraction.contacts.length + " contact(s), " + freshPeople.length + " new person(s) without emails");
+          }
+
+          const res = await enrichDomain(db, cfg, domain, {
+            people: freshPeople,
+            verify: !flags["no-verify"],
+            perPerson,
+            githubOrgs,
+            githubToken: cfg.githubToken,
+            meta: { company: domain },
+          });
+          log.raw("");
+          log.raw(`┌─ Enriched ${domain}`);
+          log.raw(`│  people          : ${res.people}`);
+          log.raw(`│  candidates      : ${res.candidatesGenerated} (${res.candidatesVerified} verified)`);
+          log.raw(`│  emails found    : ${res.emailsFound}`);
+          log.raw(`│  invalid         : ${res.invalid}`);
+          if (res.errors.length) log.raw(`│  errors          : ${res.errors.length} (see --verbose)`);
+          log.raw("└─ done");
+          for (const e of res.errors) log.warn(domain + ": " + e);
+        }
+        await db.close();
+        return 0;
+      }
+      case "people": {
+        const db = await ensureDb(cfg);
+        const rows = await listPeople(db, {
+          domain: typeof flags.domain === "string" ? flags.domain : undefined,
+          noEmail: !!flags["no-email"],
+          limit: numFlag(flags, "limit", 100),
+        });
+        if (flags.json) console.log(JSON.stringify(rows, null, 2));
+        else printPeople(rows);
+        await db.close();
         return 0;
       }
       case "agent": {
@@ -307,6 +429,7 @@ async function main(): Promise<number> {
           category: typeof flags.category === "string" ? flags.category : undefined,
           status: typeof flags.status === "string" ? flags.status : undefined,
           emailType: typeof flags.type === "string" ? flags.type : undefined,
+          emailSource: typeof flags.source === "string" ? flags.source : undefined,
           interest: typeof flags.interest === "string" ? flags.interest : undefined,
           limit: numFlag(flags, "limit", 50),
         });
@@ -322,12 +445,15 @@ async function main(): Promise<number> {
           console.log(JSON.stringify(s, null, 2));
         } else {
           log.raw(`Total: ${s.totals.total}  |  valid: ${s.totals.valid ?? 0}  |  invalid: ${s.totals.invalid ?? 0}  |  unverified: ${s.totals.unverified ?? 0}`);
+          log.raw(`People: ${s.people ?? 0}`);
           log.raw("By status:");
           for (const r of s.byStatus) log.raw(`  ${r.status.padEnd(10)} ${r.n}`);
           log.raw("By category:");
           for (const r of s.byCategory) log.raw(`  ${String(r.category).padEnd(30)} ${r.n}`);
           log.raw("By email type:");
           for (const r of s.byEmailType ?? []) log.raw(`  ${String(r.email_type).padEnd(12)} ${r.n}`);
+          log.raw("By email source:");
+          for (const r of s.bySource ?? []) log.raw(`  ${String(r.email_source).padEnd(12)} ${r.n}`);
           log.raw("Top interests:");
           for (const r of s.topInterests ?? []) log.raw(`  ${String(r.topic).padEnd(32)} ${r.n}`);
         }
@@ -351,7 +477,7 @@ async function main(): Promise<number> {
           await db.close();
           return 0;
         }
-        const cols = ["email", "person_name", "title", "phone", "company", "domain", "email_type", "category", "tier", "status", "interests", "source_url", "created_at"];
+        const cols = ["email", "email_source", "person_name", "title", "phone", "company", "domain", "email_type", "category", "tier", "status", "interests", "source_url", "created_at"];
         const csv = [
           cols.join(","),
           ...rows.map((r) =>

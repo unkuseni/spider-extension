@@ -221,6 +221,10 @@
             <input type="checkbox" id="leadsVerify" checked />
             <span>Verify emails with Plunk</span>
           </label>
+          <label class="checkbox-label" title="Infer employee emails for people found without one: learn the domain's pattern (first.last…), generate candidates, verify with Plunk">
+            <input type="checkbox" id="leadsGuess" />
+            <span>Infer employee emails</span>
+          </label>
         </div>
       </div>
       <div class="btn-row">
@@ -232,6 +236,7 @@
         <button id="leadsVerifyBtn" class="btn btn-sm btn-outline">✅ Verify stored</button>
         <button id="leadsStatsBtn" class="btn btn-sm btn-outline">📊 Stats</button>
         <button id="leadsExportBtn" class="btn btn-sm btn-outline">💾 Export CSV</button>
+        <button id="leadsEnrichBtn" class="btn btn-sm btn-outline" title="Infer + verify employee emails for companies in your leads">🔮 Enrich emails</button>
       </div>
 
       <div class="form-group" style="margin-top:12px">

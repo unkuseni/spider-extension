@@ -16,6 +16,15 @@ export interface Config {
   plunkApiBase: string;
   verifyOnHunt: boolean;
 
+  /** Infer employee emails from discovered names + verify (default off). */
+  guessEmails: boolean;
+  /** Max candidate addresses to try per person. */
+  guessPerPerson: number;
+  /** Optional GitHub token to raise the public-API rate limit for org discovery. */
+  githubToken: string;
+  /** GitHub API base (override for tests/proxies). */
+  githubApiBase: string;
+
   openaiApiKey: string;
   openaiBaseUrl: string;
   openaiModel: string;
@@ -52,6 +61,11 @@ export function loadConfig(): Config {
     plunkApiKey: str("PLUNK_API_KEY"),
     plunkApiBase: str("PLUNK_API_BASE", "https://next-api.useplunk.com"),
     verifyOnHunt: str("VERIFY_ON_HUNT", "true") !== "false",
+
+    guessEmails: str("GUESS_EMAILS", "false") === "true",
+    guessPerPerson: num("GUESS_PER_PERSON", 3),
+    githubToken: str("GITHUB_TOKEN"),
+    githubApiBase: str("GITHUB_API_BASE", "https://api.github.com"),
 
     openaiApiKey: str("OPENAI_API_KEY"),
     openaiBaseUrl: str("OPENAI_BASE_URL", "https://api.openai.com/v1"),

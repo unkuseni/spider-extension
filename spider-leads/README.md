@@ -29,9 +29,18 @@ ever put it in a CRM.
 4. **Type each email** — every address is classified:
    `corporate` (person@company), `business` (info@/sales@ mailboxes),
    `student` (.edu / .ac.uk / university domains), or `personal` (gmail, outlook, iCloud…).
-5. **Store** — every lead is upserted into Turso (deduped by email), alongside the raw
+5. **Discover people** — team/leadership/contact pages are also parsed for named humans
+   (name, title, LinkedIn, GitHub) and stored in the `people` table (deduped by
+   domain+name) — **even when no email is published**. This gives you a roster to work
+   from for employee discovery.
+6. **Infer employee emails** (opt-in) — for people without a published email, `guess.ts`
+   generates candidate addresses from their name using common patterns (first.last,
+   first_last, firstlast, f.last, flast, firstl, last.first, first), learns the
+   domain's convention from already-known valid emails to rank them, and verifies
+   candidates with Plunk. See "Employee email discovery" below.
+7. **Store** — every lead is upserted into Turso (deduped by email), alongside the raw
    record, category, email type, interests, and source URL.
-5. **Verify** — each new email is sent to Plunk's `POST /v1/verify` endpoint; results
+8. **Verify** — each new email is sent to Plunk's `POST /v1/verify` endpoint; results
    (valid, disposable, personal, MX records, typo) are stored with the lead. Invalid
    emails are marked `invalid` and can be filtered out of exports.
 
@@ -110,6 +119,12 @@ npm start -- export leads.json --format json
 | `-i, --interest TOPIC` | Filter by interest topic (substring match) |
 | `-c, --concurrency N` | Concurrent scrapes / verifications |
 | `--no-verify` | Skip Plunk verification after hunting |
+| `--guess` | Infer employee emails (pattern-based) after hunting; verify with Plunk |
+| `--no-guess` | Disable employee email inference |
+| `--per-person N` | Max candidate addresses to try per person (default 3) |
+| `--github ORGS` | Comma-separated GitHub orgs to pull public members from (enrich/hunt) |
+| `--domain D` | Filter by domain (`people` command) |
+| `--no-email` | Only people without a published email (`people` command) |
 | `--dry-run` | Rehearse: fetch + extract, write nothing |
 | `-v, --verbose` | Debug logging |
 
@@ -124,10 +139,14 @@ npm start -- export leads.json --format json
 | `SPIDER_EXTRACT` | no | `auto` (default) \| `local` \| `spider` |
 | `VERIFY_ON_HUNT` | no | `true` (default) — verify new emails automatically |
 | `SPIDER_CRAWL_LIMIT`, `SPIDER_CRAWL_DEPTH` | no | defaults 30 / 2 |
+| `GUESS_EMAILS` | no | `true` → infer employee emails automatically after `hunt`/`search` |
+| `GUESS_PER_PERSON` | no | Max candidate addresses per person (default 3) |
+| `GITHUB_TOKEN` | no | Raises GitHub org-discovery rate limit (60/h → 5000/h) |
+| `GITHUB_API_BASE` | no | GitHub API base (default `https://api.github.com`) |
 
 ## Database
 
-Two tables (created by `init-db`):
+Four tables are created by `init-db`:
 
 - **leads** — one row per contact, deduped by normalized email. Columns include
   `person_name`, `title`, `phone`, `linkedin`, `company`, `domain`, `category`,
@@ -135,8 +154,114 @@ Two tables (created by `init-db`):
   `interests` (JSON array), `source_url`, `status`
   (`new` → `verified` / `invalid` / `error`), Plunk results (`email_valid`,
   `is_disposable`, `is_personal_email`, `has_mx_records`, `plunk_reasons`,
-  `verified_at`), and the raw extraction as `raw_data`.
+  `verified_at`), and the raw extraction as `raw_data`. Employee-inference adds
+  `email_source` (`page` / `guessed` / `github` / `agent` / `user` / `unknown`),
+  `email_pattern` (e.g. `first.last`), and `email_score` (0–1 confidence).
+- **people** — named humans discovered on team/leadership/contact pages (or GitHub org
+  members), deduped by `domain + name`, stored even when no email is published. Columns:
+  `name`, `title`, `email`, `linkedin`, `github`, `domain`, `company`, `source`
+  (`page` / `github` / `user`), `source_url`, `notes`. This is the roster used for
+  pattern-based email inference.
+- **email_candidates** — every generated candidate address and its verification outcome,
+  so addresses are never re-guessed. Columns: `email` (PK), `person_name`, `domain`,
+  `pattern`, `score`, `reason`, `status` (`pending` / `valid` / `invalid` / `error`),
+  `source_url`, `detail`.
 - **runs** — one row per hunt/search execution (pages crawled, leads found/verified/invalid, errors).
+
+`stats` includes a people count and an email-source breakdown (visible in `--json` output).
+
+## Employee email discovery (inferred emails)
+
+Named people are gathered from team/leadership/contact pages (and, opt-in, GitHub), and
+where someone has no published address, the CLI **infers** one from the domain's email
+convention — then **verifies it with Plunk before storing**. Inferred emails are stored as
+leads with `email_source = 'guessed'`, plus the `email_pattern` (e.g. `first.last`) and an
+`email_score` (0–1). This turns a company's public roster into a candidate list of
+addresses you can double-check and use.
+
+How it works, per domain:
+
+1. **Load people** — all stored `people` for the domain (plus any freshly scraped ones),
+   merged with GitHub org members if `--github` is given.
+2. **Learn** — `guess.ts` inspects the domain's already-known valid emails (published +
+   verified) and learns its convention (`first.last`, `first_last`, `firstlast`…). With no
+   known emails it falls back to a generic frequency prior (first.last ≈ 65% of the world).
+3. **Generate** — for each person without an email, candidate addresses are built from
+   their name (first.last, first_last, firstlast, f.last, flast, firstl, last.first, first),
+   ranked by the learned pattern + generic prior, and capped per person.
+4. **Verify** — candidates are sent to Plunk `/v1/verify` (bounded concurrency). Valid ones
+   are stored as leads (`email_source = 'guessed'`) and marked verified; invalid or errored
+   ones are recorded in `email_candidates` so they are never re-guessed.
+5. **GitHub org discovery (opt-in)** — `github.ts` pulls public org members via
+   `api.github.com`. Public GitHub profile emails become leads with
+   `email_source = 'github'` (no guessing needed); unnamed/no-email members are added to
+   the `people` roster. Unauthenticated the API allows ~60 req/h; set `GITHUB_TOKEN` to
+   raise that to 5000/h.
+
+### `enrich` — infer + verify emails for domains already in the DB
+
+```bash
+# Infer + verify employee emails for every stored person at one domain
+npm start -- enrich acme.com
+
+# Fresh page scan first (discover new people before guessing), cap candidates per person
+npm start -- enrich acme.com globex.io --extract spider --per-person 5
+
+# Also pull public members of GitHub orgs (dev/tech companies)
+npm start -- enrich vercel.com --github vercel,nextjs
+
+# Skip Plunk verification — candidates are saved as 'pending' for later
+npm start -- enrich acme.com --no-verify
+```
+
+`--per-person N` caps candidate addresses tried per person (default 3); `--github ORGS`
+accepts a comma-separated list of GitHub orgs; `--extract auto|local|spider` optionally
+scans pages first to discover fresh people (default: use the `people` already stored).
+
+### `people` — inspect the discovered roster
+
+```bash
+npm start -- people                # everyone discovered so far
+npm start -- people --domain acme.com --no-email   # people at acme without an email
+npm start -- people --limit 50 --json
+```
+
+`--domain X` filters to one domain, `--no-email` limits to people without a published
+email (the ones inference targets), `--limit` caps rows, `--json` gives machine-readable
+rows.
+
+### `hunt` / `search` with inference on
+
+Hunting can run inference automatically as part of the run:
+
+```bash
+npm start -- hunt acme.com --guess            # infer + verify after extracting
+npm start -- hunt acme.com --guess --per-person 4
+npm start -- hunt acme.com --no-guess         # explicitly disable
+```
+
+Enable it by default in `.env` with `GUESS_EMAILS=true`:
+`hunt`/`search` then infer for people without emails unless you pass `--no-guess`.
+`--per-person` and `--github` work the same as for `enrich`. Inference needs a
+`PLUNK_API_KEY` — without one, a `hunt --guess` run skips inference with a warning
+(`enrich` instead saves candidates as `pending`).
+
+### Env vars for inference
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GUESS_EMAILS` | `false` | `true` → infer employee emails automatically after `hunt`/`search` |
+| `GUESS_PER_PERSON` | `3` | Max candidate addresses to try per person |
+| `GITHUB_TOKEN` | — | GitHub token to raise the org-discovery rate limit (60/h → 5000/h) |
+| `GITHUB_API_BASE` | `https://api.github.com` | GitHub API base (tests / proxies) |
+
+> **Be honest about these addresses.** Every candidate is verified with Plunk
+> (`/v1/verify`) before it is stored, so you know the mailbox is deliverable — but
+> pattern-guessing means the address is an *inference*, not a published fact: it may
+> still be wrong (a different-looking inbox, a shared mailbox, or someone who changed
+> their address). Always double-check before outreach, and respect the recipient's
+> expectations and your local law (CAN-SPAM / GDPR) — verification confirms a mailbox
+> exists, it does not give you permission to contact it.
 
 ## Cost-saving tips
 
@@ -178,11 +303,15 @@ npm start -- list && npm start -- stats
 
 ```
 src/
-  index.ts     CLI (hunt, search, verify, list, stats, export, init-db)
+  index.ts     CLI (hunt, search, enrich, people, agent, verify, list, stats, export, init-db)
   pipeline.ts  orchestration: links → filter → scrape → extract → categorize → store → verify
   spider.ts    Spider Cloud REST client (links, scrape, crawl, search, extract-contacts)
   ai.ts        OpenAI-compatible calls: domain categorization + contact parsing (rule fallback)
   extract.ts   regex email/phone/LinkedIn extraction + contact-URL filtering
+  people.ts    named-person parsing (team/leadership pages), name splitting, GitHub handles
+  guess.ts     pattern-based email candidate generation + a domain's convention learning
+  github.ts    GitHub org member discovery (public api.github.com)
+  enrich.ts    employee email enrichment: discover people → guess → verify → store
   plunk.ts     Plunk /v1/verify client + batch verifier
   db.ts        Turso schema, upserts, queries, stats, export
   config.ts    environment configuration
@@ -199,6 +328,8 @@ Instead of the fixed pipeline, the model can **call tools** to decide what to do
 | `search_web` | find target sites from a query |
 | `crawl_site` / `get_links` | enumerate and crawl a site |
 | `extract_contacts` | scrape contact pages → emails/names/titles (+ email type) |
+| `find_employees` | discover named employees (name/title/LinkedIn/email) → people without emails |
+| `guess_emails` | infer + verify employee emails via the domain pattern, store valid ones |
 | `categorize_company` | industry category + interests + tier |
 | `store_leads` | upsert into Turso (dedup, validation, type classification) |
 | `verify_email` | Plunk check, persisted to the stored lead |
@@ -226,6 +357,7 @@ the tools payload, the CLI explains and suggests the `hunt`/`search` commands in
 | **Business** (info@/sales@ mailboxes) | `hunt acme.com` → `list --type business` (or `search --query "… contact email"`) |
 | **Student** (universities) | `hunt stanford.edu` or `search --query "admissions email site:.edu"` → `list --type student` |
 | **Personal** (gmail/outlook/…) | `search --query "founder gmail.com"` → `list --type personal` |
+| **Inferred employee emails** (person@company, not published) | `enrich acme.com` (or `hunt acme.com --guess`) → `list --type corporate` |
 | **By interest** | `list --interest "AI / Machine Learning"`, `--interest Sustainability`, … |
 
 Interests are derived per company from its pages (AI, with keyword fallback) and stored with

@@ -19,11 +19,20 @@ Scrape any page, crawl entire sites, search the web — powered by [Spider Cloud
   5. leads are upserted into Turso (deduped by email)
   6. emails are checked with Plunk's `/v1/verify` (valid, disposable, MX, typo) — invalid ones flagged
   7. browse (filter by type/interest), stats, and export to CSV right in the panel
+- **Employee email discovery (pattern-based)** — named people (with title/LinkedIn/GitHub,
+  even with no published email) are extracted from team/leadership/contact pages and stored
+  in a `people` table. When **"Infer employee emails"** is ticked (or you hit the 🔮
+  **Enrich emails** button), the pipeline learns the domain's address convention from
+  already-known valid emails, generates candidate addresses per person (first.last,
+  firstlast, … — capped, default 3), and verifies them with Plunk before storing. Valid
+  ones become leads with a **🔮 Guessed** **Source** badge. The shared pipeline also pulls
+  GitHub org members (CLI `--github`) and stores any public GitHub email directly. See
+  [spider-leads](spider-leads/README.md#employee-email-discovery-inferred-emails).
 - **AI Agent (Leads tab)** — type an objective ("find fintech companies interested in AI and
   verify their emails") and the model drives the whole workflow itself via tool calling:
-  `search_web`, `extract_contacts`, `categorize_company`, `store_leads`, `verify_email`,
-  `query_leads`. Requires a function-calling model (OpenAI, DeepSeek `deepseek-chat` /
-  `deepseek-v4-flash`, Groq…).
+  `search_web`, `extract_contacts`, `find_employees`, `guess_emails`, `categorize_company`,
+  `store_leads`, `verify_email`, `query_leads`. Requires a function-calling model (OpenAI,
+  DeepSeek `deepseek-chat` / `deepseek-v4-flash`, Groq…).
 - **Career tab** — build a profile from your resume (**PDF/DOCX/TXT**, parsed locally),
   tailor resume + cover letter to any job, get a fit score, and draft cold email (opens in your
   mail app) or LinkedIn messages (copy & send yourself). The extension never auto-sends.
@@ -114,10 +123,10 @@ npm run build:vendor   # spider-leads/src/*.ts → vendor/leads-core.js
 npm run build:pdf      # pdf.js → vendor/pdf-extract.js + vendor/pdf.worker.mjs
 npm run build:firefox  # → dist/firefox/
 npm run build:safari   # → dist/safari/
-npm test               # 31 tests: unit (helpers/storage/plugins) + integration
+npm test               # full suite: unit (helpers/storage/plugins) + integration
                        # (hunt, search, agent loop, career, assist loop, verify,
-                       #  plugin http tools & webhooks — all against the mock API,
-                       #  no real keys or network needed)
+                       #  plugin http tools & webhooks, employee-email inference —
+                       #  all against the mock API, no real keys or network needed)
 ```
 
 Then reload the extension. Re-run `build:vendor` whenever you change

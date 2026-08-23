@@ -528,6 +528,13 @@ body {
 .status-badge.student   { background: rgba(52, 211, 153, 0.14); color: var(--success); }
 .status-badge.personal  { background: rgba(251, 191, 36, 0.14); color: var(--warning); }
 .status-badge.unknown   { background: var(--surface-hover); color: var(--text-muted); }
+
+/* Email source chips (Found / Guessed / GitHub / Agent) */
+.status-badge.source-page    { background: rgba(124, 92, 252, 0.18); color: #b3a2ff; }
+.status-badge.source-guessed { background: rgba(251, 191, 36, 0.15); color: var(--warning); }
+.status-badge.source-github  { background: rgba(52, 211, 153, 0.14); color: var(--success); }
+.status-badge.source-agent   { background: rgba(96, 165, 250, 0.16); color: #7db4ff; }
+.status-badge.source-user    { background: var(--surface-hover); color: var(--text-muted); }
 /* Career assist */
 .career-output { margin-top: 12px; }
 .career-pre {

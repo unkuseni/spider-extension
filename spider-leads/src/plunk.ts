@@ -63,9 +63,10 @@ export async function verifyBatch(
       const email = emails[cursor++];
       try {
         const res = await verifyEmail(cfg, email);
-        opts.onResult?.(email, res);
+        // Await onResult: callers persist results / count stats inside it.
+        await opts.onResult?.(email, res);
       } catch (err) {
-        opts.onResult?.(email, null as unknown as VerificationResult, err as Error);
+        await opts.onResult?.(email, null as unknown as VerificationResult, err as Error);
       }
     }
   };

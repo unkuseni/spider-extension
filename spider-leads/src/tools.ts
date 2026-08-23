@@ -4,10 +4,12 @@ import type { Client } from "@libsql/client";
 import type { Config } from "./config.ts";
 import type { ToolDef } from "./ai.ts";
 import { categorizeDomain } from "./ai.ts";
-import type { PageContent } from "./types.ts";
+import type { PageContent, Person } from "./types.ts";
 import { classifyEmailType, domainOf, isValidEmail, toRoot } from "./extract.ts";
 import { crawlPages, getSiteLinks, searchPages, scrapePage } from "./spider.ts";
 import { extractContactsFromSite, normalizeContacts } from "./pipeline.ts";
+import { enrichDomain } from "./enrich.ts";
+import { extractGithubOrgs } from "./people.ts";
 import { verifyEmail as plunkVerify } from "./plunk.ts";
 import { listLeads, recordVerification, upsertLead } from "./db.ts";
 import { log } from "./log.ts";
@@ -133,6 +135,8 @@ export function buildTools(cfg: Config, db: Client, opts: AgentToolOpts = {}): R
           verify: false,
           dryRun: false,
           concurrency: 4,
+          guessEmails: false,
+          perPerson: 3,
         });
         return JSON.stringify({
           domain: extraction.domain,
@@ -202,6 +206,97 @@ export function buildTools(cfg: Config, db: Client, opts: AgentToolOpts = {}): R
       },
     },
 
+    find_employees: {
+      name: "find_employees",
+      description:
+        "Discover named employees at a company: crawls team/leadership/contact pages and returns people " +
+        "with name, title, LinkedIn and any published email. People without emails can then be fed to " +
+        "guess_emails to infer their addresses.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Company domain or URL, e.g. https://acme.com" },
+          limit: { type: "integer", description: "Max pages to scrape (default " + limit + ")" },
+        },
+        required: ["url"],
+      },
+      async run(args) {
+        const url = String(args.url ?? "");
+        if (!/^https?:\/\//.test(url)) {
+          return JSON.stringify({ error: "url must be absolute, e.g. https://acme.com" });
+        }
+        const extraction = await extractContactsFromSite(cfg, url, {
+          limit: Number(args.limit) || limit,
+          depth: 2,
+          mode: "smart",
+          extract: cfg.spiderExtract,
+          verify: false,
+          dryRun: false,
+          concurrency: 4,
+          guessEmails: false,
+          perPerson: 3,
+        });
+        const contacts = normalizeContacts(extraction.contacts, extraction.pages);
+        const pageText = extraction.pages.map((p) => p.markdown).join("\n");
+        const githubOrgs = extractGithubOrgs(pageText);
+        const people: Person[] = contacts
+          .filter((c) => c.person_name)
+          .map((c) => ({
+            name: c.person_name!,
+            title: c.title,
+            linkedin: c.linkedin,
+            github: c.github,
+            email: c.email,
+            source: "page",
+            sourceUrl: extraction.pages[0]?.url,
+          }));
+        return JSON.stringify({
+          domain: extraction.domain,
+          pagesScraped: extraction.pages.length,
+          githubOrgs,
+          people: people.map((p) => ({
+            name: p.name,
+            title: p.title ?? null,
+            email: p.email ?? null,
+            linkedin: p.linkedin ?? null,
+          })),
+          peopleWithoutEmail: people.filter((p) => !p.email).length,
+        });
+      },
+    },
+
+    guess_emails: {
+      name: "guess_emails",
+      description:
+        "Infer employee emails for a company domain: takes named people (discovered via find_employees or " +
+        "already stored), generates candidate addresses using the domain's learned email convention " +
+        "(first.last, firstlast, …), verifies them with Plunk, and stores valid ones as leads. " +
+        "Returns each found email with its pattern and confidence.",
+      parameters: {
+        type: "object",
+        properties: {
+          domain: { type: "string", description: "Company domain, e.g. acme.com" },
+          per_person: { type: "integer", description: "Max candidates per person (default 3)" },
+          verify: { type: "boolean", description: "Verify candidates with Plunk (default true)" },
+          github_orgs: { type: "string", description: "Comma-separated GitHub orgs for extra people" },
+        },
+        required: ["domain"],
+      },
+      async run(args) {
+        const domain = String(args.domain ?? "").replace(/^https?:\/\//, "").replace(/\/$/, "");
+        if (!domain) return JSON.stringify({ error: "domain required" });
+        const githubOrgs = String(args.github_orgs ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+        const res = await enrichDomain(db, cfg, domain, {
+          verify: args.verify !== false,
+          perPerson: Number(args.per_person) || 3,
+          githubOrgs,
+          githubToken: cfg.githubToken,
+          meta: { company: domain },
+        });
+        return JSON.stringify(res);
+      },
+    },
+
     store_leads: {
       name: "store_leads",
       description:
@@ -263,6 +358,7 @@ export function buildTools(cfg: Config, db: Client, opts: AgentToolOpts = {}): R
           const lead = {
             email,
             emailType: classifyEmailType(email),
+            emailSource: "agent" as const,
             personName: l.person_name ? String(l.person_name) : null,
             title: l.title ? String(l.title) : null,
             phone: l.phone ? String(l.phone) : null,
@@ -294,13 +390,15 @@ export function buildTools(cfg: Config, db: Client, opts: AgentToolOpts = {}): R
       name: "query_leads",
       description:
         "Query stored leads from the database. Filters: status (new/verified/invalid), category, " +
-        "email_type (corporate/business/student/personal), interest (topic substring). Returns rows.",
+        "email_type (corporate/business/student/personal), email_source (page/guessed/github), " +
+        "interest (topic substring). Returns rows.",
       parameters: {
         type: "object",
         properties: {
           status: { type: "string" },
           category: { type: "string" },
           email_type: { type: "string" },
+          email_source: { type: "string" },
           interest: { type: "string" },
           limit: { type: "integer", description: "Max rows (default 20)" },
         },
@@ -310,6 +408,7 @@ export function buildTools(cfg: Config, db: Client, opts: AgentToolOpts = {}): R
           status: args.status ? String(args.status) : undefined,
           category: args.category ? String(args.category) : undefined,
           emailType: args.email_type ? String(args.email_type) : undefined,
+          emailSource: args.email_source ? String(args.email_source) : undefined,
           interest: args.interest ? String(args.interest) : undefined,
           limit: Number(args.limit) || 20,
         });

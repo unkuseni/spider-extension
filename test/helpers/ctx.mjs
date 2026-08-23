@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export async function startMock() {
+export async function startMock(opts) {
   const { startMockApi } = await import("../../spider-leads/scripts/mock-api.ts");
-  return startMockApi(0); // ephemeral port
+  return startMockApi(0, opts); // ephemeral port; optional opts for deterministic verify
 }
 
 /** Build a Config pointing at the mock, with a fresh temp file DB. */
