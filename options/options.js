@@ -32,6 +32,8 @@ async function loadSpiderSettings() {
   const prefs = await getPreferences();
   if (prefs.defaultMode) document.getElementById('defaultMode').value = prefs.defaultMode;
   if (prefs.defaultFormat) document.getElementById('defaultFormat').value = prefs.defaultFormat;
+  document.getElementById('usePremiumProxy').checked = prefs.usePremiumProxy === true;
+  document.getElementById('proxyCountry').value = prefs.proxyCountry || '';
 }
 
 async function saveSpiderSettings() {
@@ -42,7 +44,12 @@ async function saveSpiderSettings() {
 
   try {
     await setApiKey(apiKey);
-    await setPreferences({ defaultMode: mode, defaultFormat: format });
+    await setPreferences({
+      defaultMode: mode,
+      defaultFormat: format,
+      usePremiumProxy: document.getElementById('usePremiumProxy').checked,
+      proxyCountry: document.getElementById('proxyCountry').value.trim(),
+    });
     status.textContent = '✓ Saved';
     status.className = 'status-msg success';
     setTimeout(() => { status.textContent = ''; }, 2000);

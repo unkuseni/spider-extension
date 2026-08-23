@@ -6,7 +6,7 @@ import type { ToolDef } from "./ai.ts";
 import { categorizeDomain } from "./ai.ts";
 import type { PageContent, Person } from "./types.ts";
 import { classifyEmailType, domainOf, isValidEmail, toRoot } from "./extract.ts";
-import { crawlPages, getSiteLinks, searchPages, scrapePage } from "./spider.ts";
+import { crawlPages, fetchStructured, getSiteLinks, searchPages, scrapePage } from "./spider.ts";
 import { extractContactsFromSite, normalizeContacts } from "./pipeline.ts";
 import { enrichDomain } from "./enrich.ts";
 import { extractGithubOrgs } from "./people.ts";
@@ -152,6 +152,49 @@ export function buildTools(cfg: Config, db: Client, opts: AgentToolOpts = {}): R
             linkedin: c.linkedin ?? null,
           })),
         });
+      },
+    },
+
+    fetch_structured: {
+      name: "fetch_structured",
+      description:
+        "Structured extraction via Spider's curated per-website scraper configs (Fetch API). " +
+        "Best for sites with public configs (zillow.com listings, indeed.com jobs, yelp.com " +
+        "businesses, news sites) — returns structured items, metadata, and links. " +
+        "Use scrape/crawl_site for plain pages, fetch_structured for marketplace data.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Full URL or domain/path, e.g. https://zillow.com/homes/" },
+          limit: { type: "integer", description: "Max pages to crawl (default 1, max 100)" },
+          readability: { type: "boolean", description: "Strip navigation/ads (default false)" },
+        },
+        required: ["url"],
+      },
+      async run(args) {
+        const url = String(args.url ?? "");
+        if (!url) return JSON.stringify({ error: "url required" });
+        try {
+          const data = await fetchStructured(cfg, url, {
+            limit: Number(args.limit) || 1,
+            readability: !!args.readability,
+          });
+          const items = Array.isArray(data.css_extracted)
+            ? data.css_extracted.slice(0, 25)
+            : data.css_extracted && typeof data.css_extracted === "object"
+              ? (data.css_extracted as any).items?.slice(0, 25) ?? []
+              : [];
+          return JSON.stringify({
+            url: data.url,
+            status: data.status,
+            metadata: data.metadata ?? null,
+            items,
+            links: (data.links ?? []).slice(0, 60),
+            content: typeof data.content === "string" ? preview(data.content, 500) : null,
+          });
+        } catch (err) {
+          return JSON.stringify({ error: String((err as Error).message) });
+        }
       },
     },
 

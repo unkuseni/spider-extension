@@ -169,13 +169,42 @@ export function createMockHandler(opts: MockOptions = {}) {
     if (method === "POST" && url === "/scrape") {
       const body = await readBody(req);
       const u = body.url ?? "https://example.com/";
+      let content = pageContent(u);
+      // Echo proxy/geo params so tests can assert passthrough end-to-end.
+      if (body.premium_proxy || body.country_code) {
+        content = `# proxy echo: premium_proxy=${String(body.premium_proxy)} country_code=${String(body.country_code)}\n\n` + content;
+      }
       return json(res, 200, [{
         url: u,
         status: 200,
-        content: pageContent(u),
+        content,
         error: null,
         costs: { total_cost: 0.00001, total_cost_formatted: "0.00001" },
       }]);
+    }
+    // Fetch API: POST /fetch/{domain}/{path} (curated/AI per-site scraper configs).
+    if (method === "POST" && /^\/fetch\/[^/]+\//.test(path)) {
+      const body = await readBody(req);
+      const domain = decodeURIComponent(path.split("/")[2] ?? "");
+      const pagePath = decodeURIComponent("/" + path.split("/").slice(3).join("/"));
+      const full = `https://${domain}${pagePath}`;
+      let content = pageContent(full);
+      if (body.premium_proxy || body.country_code) {
+        content = `# proxy echo: premium_proxy=${String(body.premium_proxy)} country_code=${String(body.country_code)}\n\n` + content;
+      }
+      return json(res, 200, {
+        url: full,
+        status: 200,
+        content,
+        metadata: { title: `${domain} — structured`, description: "Mock structured extraction" },
+        css_extracted: [
+          { title: "Premium condo downtown", price: "$1,250,000", beds: 3, baths: 2 },
+          { title: "Modern loft near transit", price: "$780,000", beds: 2, baths: 1 },
+          { title: "Single-family home w/ yard", price: "$540,000", beds: 4, baths: 2 },
+        ],
+        links: linksFor(full).map((l) => l.url),
+        errors: null,
+      });
     }
     if (method === "POST" && url === "/search") {
       const body = await readBody(req);

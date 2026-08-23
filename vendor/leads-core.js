@@ -153,7 +153,14 @@ var SpiderError = class extends Error {
   }
 };
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function proxyFields(cfg) {
+  const out = {};
+  if (cfg.spiderProxy) out.premium_proxy = true;
+  if (cfg.spiderCountry && /^[a-z]{2}$/i.test(cfg.spiderCountry)) out.country_code = cfg.spiderCountry.toLowerCase();
+  return out;
+}
 async function apiPost(cfg, path, body, attempts = 3) {
+  const merged = { ...proxyFields(cfg), ...body };
   let lastErr = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     let resp;
@@ -164,7 +171,7 @@ async function apiPost(cfg, path, body, attempts = 3) {
           Authorization: `Bearer ${cfg.spiderApiKey}`,
           "Content-Type": "application/json"
         },
-        body: JSON.stringify(body)
+        body: JSON.stringify(merged)
       });
     } catch (err) {
       lastErr = err;
@@ -253,6 +260,34 @@ async function extractContactsSpider(cfg, url, opts = {}) {
   });
   const arr = Array.isArray(data) ? data : [];
   return arr.filter((r) => r && typeof r === "object");
+}
+function fetchPathFromUrl(input) {
+  let u;
+  try {
+    u = new URL(/^https?:\/\//i.test(input) ? input : "https://" + input);
+  } catch {
+    throw new SpiderError(0, `invalid URL: ${input}`);
+  }
+  const domain = u.hostname.replace(/^www\./, "");
+  const path = (u.pathname || "/").replace(/\/+$/, "") || "/";
+  return { domain, path };
+}
+async function fetchStructured(cfg, input, opts = {}) {
+  const { domain, path } = fetchPathFromUrl(input);
+  const body = { ...proxyFields(cfg) };
+  if (opts.returnFormat) body.return_format = opts.returnFormat;
+  if (opts.limit && opts.limit > 1) body.limit = opts.limit;
+  if (opts.readability) body.readability = true;
+  const data = await apiPost(cfg, `/fetch/${encodeURIComponent(domain)}${encodeURI(path)}`, body);
+  if (!data || typeof data !== "object") throw new SpiderError(0, `/fetch returned no data for ${domain}${path}`);
+  return {
+    url: String(data.url ?? input),
+    content: data.content ?? null,
+    status: Number(data.status ?? 0),
+    metadata: data.metadata ?? null,
+    css_extracted: data.css_extracted ?? null,
+    links: Array.isArray(data.links) ? data.links.map(String) : []
+  };
 }
 
 // spider-leads/src/extract.ts
@@ -7038,6 +7073,40 @@ function buildTools(cfg, db, opts = {}) {
         });
       }
     },
+    fetch_structured: {
+      name: "fetch_structured",
+      description: "Structured extraction via Spider's curated per-website scraper configs (Fetch API). Best for sites with public configs (zillow.com listings, indeed.com jobs, yelp.com businesses, news sites) \u2014 returns structured items, metadata, and links. Use scrape/crawl_site for plain pages, fetch_structured for marketplace data.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Full URL or domain/path, e.g. https://zillow.com/homes/" },
+          limit: { type: "integer", description: "Max pages to crawl (default 1, max 100)" },
+          readability: { type: "boolean", description: "Strip navigation/ads (default false)" }
+        },
+        required: ["url"]
+      },
+      async run(args) {
+        const url = String(args.url ?? "");
+        if (!url) return JSON.stringify({ error: "url required" });
+        try {
+          const data = await fetchStructured(cfg, url, {
+            limit: Number(args.limit) || 1,
+            readability: !!args.readability
+          });
+          const items = Array.isArray(data.css_extracted) ? data.css_extracted.slice(0, 25) : data.css_extracted && typeof data.css_extracted === "object" ? data.css_extracted.items?.slice(0, 25) ?? [] : [];
+          return JSON.stringify({
+            url: data.url,
+            status: data.status,
+            metadata: data.metadata ?? null,
+            items,
+            links: (data.links ?? []).slice(0, 60),
+            content: typeof data.content === "string" ? preview(data.content, 500) : null
+          });
+        } catch (err) {
+          return JSON.stringify({ error: String(err.message) });
+        }
+      }
+    },
     categorize_company: {
       name: "categorize_company",
       description: "Classify a company: industry category (SaaS, Agency, E-commerce\u2026), tier, confidence, and interest topics (e.g. AI / Machine Learning, Sustainability) derived from its website.",
@@ -7276,7 +7345,7 @@ function buildTools(cfg, db, opts = {}) {
 }
 
 // spider-leads/src/agent.ts
-var SYSTEM_PROMPT = "You are an autonomous B2B lead-generation agent. You have tools for web search, site crawling, contact extraction, employee discovery, email inference (pattern-based guessing + Plunk verification), company categorization (industry + interests), email verification (Plunk), storing leads (Turso), and querying stored leads.\nRules:\n- Use the tools to accomplish the user's objective. NEVER invent data: only report what tools return.\n- Typical flow: search_web to find targets \u2192 extract_contacts per target \u2192 find_employees to get names without emails \u2192 guess_emails to infer + verify their addresses \u2192 categorize_company \u2192 store_leads \u2192 verify_email for new emails (when verification is wanted).\n- Never store fabricated emails. Email addresses must come from extraction results or from guess_emails (which verifies every inferred address with Plunk before storing).\n- Keep tool arguments minimal and correct; parse tool results before deciding next steps.\n- When the objective is complete (or blocked), reply with a concise final summary: targets examined, leads found/stored/updated, verified/invalid counts, categories and top interests, and any failures.";
+var SYSTEM_PROMPT = "You are an autonomous B2B lead-generation agent. You have tools for web search, site crawling, contact extraction, employee discovery, email inference (pattern-based guessing + Plunk verification), company categorization (industry + interests), email verification (Plunk), storing leads (Turso), querying stored leads, and structured fetching of marketplace/listing pages (Zillow, Indeed, Yelp).\nRules:\n- Use the tools to accomplish the user's objective. NEVER invent data: only report what tools return.\n- Typical flow: search_web to find targets \u2192 extract_contacts per target \u2192 find_employees to get names without emails \u2192 guess_emails to infer + verify their addresses \u2192 categorize_company \u2192 store_leads \u2192 verify_email for new emails (when verification is wanted).\n- fetch_structured is for curated configs / marketplace pages; extract_contacts is for company sites.\n- Never store fabricated emails. Email addresses must come from extraction results or from guess_emails (which verifies every inferred address with Plunk before storing).\n- Keep tool arguments minimal and correct; parse tool results before deciding next steps.\n- When the objective is complete (or blocked), reply with a concise final summary: targets examined, leads found/stored/updated, verified/invalid counts, categories and top interests, and any failures.";
 function countToolCalls(calls) {
   return [...calls.entries()].map(([tool, count]) => ({ tool, count }));
 }
@@ -7829,6 +7898,8 @@ export {
   extractGithubOrgs,
   extractGithubUsers,
   extractNamedPeople,
+  fetchPathFromUrl,
+  fetchStructured,
   findGithubPeople,
   getSiteLinks,
   guessLabel,

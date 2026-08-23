@@ -88,6 +88,10 @@ npm start -- search --query "plumbing companies in Austin" --limit 20
 # Let the AI drive the whole workflow (function calling / tool use)
 npm start -- agent "find fintech companies interested in AI and verify their emails"
 
+# Structured data via Spider's curated per-site scraper configs (Zillow, Indeed, Yelp…)
+npm start -- fetch https://zillow.com/homes/
+npm start -- fetch https://zillow.com/homes/ --json
+
 # Verify stored leads (default: status 'new')
 npm start -- verify --concurrency 5
 
@@ -123,6 +127,10 @@ npm start -- export leads.json --format json
 | `--no-guess` | Disable employee email inference |
 | `--per-person N` | Max candidate addresses to try per person (default 3) |
 | `--github ORGS` | Comma-separated GitHub orgs to pull public members from (enrich/hunt) |
+| `--proxy` | Route requests through Spider's premium proxy pool (residential rotation) |
+| `--no-proxy` | Disable the premium proxy |
+| `--country CC` | ISO-2 country for proxy georouting, e.g. `--country us` |
+| `--readability` | Strip navigation/ads — main content only (`fetch`) |
 | `--domain D` | Filter by domain (`people` command) |
 | `--no-email` | Only people without a published email (`people` command) |
 | `--dry-run` | Rehearse: fetch + extract, write nothing |
@@ -139,6 +147,8 @@ npm start -- export leads.json --format json
 | `SPIDER_EXTRACT` | no | `auto` (default) \| `local` \| `spider` |
 | `VERIFY_ON_HUNT` | no | `true` (default) — verify new emails automatically |
 | `SPIDER_CRAWL_LIMIT`, `SPIDER_CRAWL_DEPTH` | no | defaults 30 / 2 |
+| `SPIDER_PROXY` | no | `true` → use the premium proxy pool on every request |
+| `SPIDER_COUNTRY` | no | ISO-2 country for proxy georouting, e.g. `us` |
 | `GUESS_EMAILS` | no | `true` → infer employee emails automatically after `hunt`/`search` |
 | `GUESS_PER_PERSON` | no | Max candidate addresses per person (default 3) |
 | `GITHUB_TOKEN` | no | Raises GitHub org-discovery rate limit (60/h → 5000/h) |
@@ -263,6 +273,50 @@ Enable it by default in `.env` with `GUESS_EMAILS=true`:
 > expectations and your local law (CAN-SPAM / GDPR) — verification confirms a mailbox
 > exists, it does not give you permission to contact it.
 
+## Scraping harder sites
+
+Spider Cloud's [request modes](https://spider.cloud/docs/overview/) (`smart` auto, `http`
+static, `browser` JS/SPA) plus the **premium proxy pool** and the curated **Fetch API**
+decide what works where. Site-by-site reality:
+
+| Site | Verdict | How |
+| --- | --- | --- |
+| Company websites, directories, job boards | ✅ | `hunt` / `search` as-is; `jobs-ats` reads Greenhouse/Lever/Ashby boards |
+| **Zillow** | ⚠️ Listings yes, contacts rare | `fetch https://zillow.com/homes/` uses the curated scraper config; agent emails appear only on agent-profile pages |
+| **YouTube** | ✅ Metadata, ❌ emails | `hunt <channel's linked site>` isn't needed for videos but works for their site; `search` finds channel "about" pages |
+| **LinkedIn** | ⚠️ Public company data only | Their [LinkedIn scraper](https://spider.cloud/scrapers/linkedin-scraper/) returns public company profiles/jobs/employee counts; **personal emails are never public** — use Assist (logged-in browser) to read, and `enrich --github` / `enrich --guess` for contacts |
+| **Facebook** | ❌ | Login wall + ToS prohibition; no curated config — don't build on it |
+
+### Premium proxy + country
+
+Routes every request through Spider's residential/ISP rotation (helps on bot-protected
+sites). Costs a premium per request — enable it only where needed.
+
+```bash
+npm start -- hunt acme.com --proxy --country us
+npm start -- enrich acme.com --proxy --country de
+SPIDER_PROXY=true SPIDER_COUNTRY=us npm start -- hunt acme.com   # via env
+```
+
+In the browser extension: Options → Spider Cloud → **Premium proxy** + **Proxy country**.
+
+### `fetch` — structured data from curated scraper configs
+
+`POST /fetch/{domain}/{path}` uses AI-discovered (then cached) per-site scraper configs —
+no CSS selectors to write. First call per domain/path bootstraps the config (~3-5s);
+later calls hit cache.
+
+```bash
+# Structured items from a marketplace/listing page
+npm start -- fetch https://zillow.com/homes/
+npm start -- fetch https://indeed.com/jobs --json
+# Raw markdown instead of structured items
+npm start -- fetch https://zillow.com/homes/ -F markdown
+```
+
+The agent also has a `fetch_structured` tool, so it can pull listing/job data in the same
+run as lead hunting.
+
 ## Cost-saving tips
 
 - Set `SPIDER_EXTRACT=local` to avoid Spider AI credits and use your own LLM key.
@@ -303,7 +357,7 @@ npm start -- list && npm start -- stats
 
 ```
 src/
-  index.ts     CLI (hunt, search, enrich, people, agent, verify, list, stats, export, init-db)
+  index.ts     CLI (hunt, search, fetch, enrich, people, agent, verify, list, stats, export, init-db)
   pipeline.ts  orchestration: links → filter → scrape → extract → categorize → store → verify
   spider.ts    Spider Cloud REST client (links, scrape, crawl, search, extract-contacts)
   ai.ts        OpenAI-compatible calls: domain categorization + contact parsing (rule fallback)
@@ -328,6 +382,7 @@ Instead of the fixed pipeline, the model can **call tools** to decide what to do
 | `search_web` | find target sites from a query |
 | `crawl_site` / `get_links` | enumerate and crawl a site |
 | `extract_contacts` | scrape contact pages → emails/names/titles (+ email type) |
+| `fetch_structured` | curated Fetch API — structured items from Zillow/Indeed/Yelp-class pages |
 | `find_employees` | discover named employees (name/title/LinkedIn/email) → people without emails |
 | `guess_emails` | infer + verify employee emails via the domain pattern, store valid ones |
 | `categorize_company` | industry category + interests + tier |

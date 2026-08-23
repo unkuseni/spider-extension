@@ -8,6 +8,7 @@ import {
 } from "./pipeline.ts";
 import { runAgent } from "./agent.ts";
 import { enrichDomain } from "./enrich.ts";
+import { fetchStructured } from "./spider.ts";
 import { discoverPluginsDir, installJsonPluginFile, loadPlugins, resolveNamedFilter } from "./plugins.ts";
 import type { Plugin, Person } from "./types.ts";
 import { dbStats, listLeads, listPeople } from "./db.ts";
@@ -42,6 +43,10 @@ const FLAGS: Flag[] = [
   { name: "domain", takesValue: true },
   { name: "verify", takesValue: false },
   { name: "no-verify", takesValue: false },
+  { name: "proxy", takesValue: false },
+  { name: "no-proxy", takesValue: false },
+  { name: "country", takesValue: true },
+  { name: "readability", takesValue: false },
   { name: "guess", takesValue: false },
   { name: "no-guess", takesValue: false },
   { name: "no-email", takesValue: false },
@@ -98,6 +103,8 @@ COMMANDS
   init-db                 Create the leads + runs tables in the database
   hunt <url|domain...>    Crawl sites and extract leads (links → contact pages → AI extraction)
   search <query>          Search the web and extract leads from result pages
+  fetch <url>             Structured extraction via Spider's curated/AI per-site scraper
+                          configs (zillow.com, indeed.com, yelp.com…; /fetch API)
   enrich <domain...>      Infer employee emails: discover people, learn the domain's email
                           pattern, generate candidates, verify with Plunk, store valid ones
   people                  List discovered people (--domain X, --no-email)
@@ -119,6 +126,11 @@ FLAGS
   -e, --extract MODE   auto | local | spider — how contacts are extracted (default auto)
   -f, --filter REGEX   Only extract from URLs matching REGEX
   -c, --concurrency N  Concurrent fetches / verifications (default 4-5)
+      --proxy          Route requests through Spider's premium proxy pool
+                       (residential rotation — for bot-protected sites)
+      --no-proxy       Disable the premium proxy
+      --country CC     ISO-2 country for proxy georouting, e.g. --country us (en/de…)
+      --readability    Strip navigation/ads, main content only (fetch)
       --guess          Infer employee emails (pattern-based) after hunting; verify with Plunk
       --no-guess       Disable employee email inference
       --per-person N   Max candidate addresses to try per person (default 3)
@@ -133,12 +145,12 @@ FLAGS
   -i, --interest TOPIC Filter by interest topic (substring match)
       --domain D       Filter by domain (people command)
       --no-email       Only people without a published email (people command)
-  -F, --format FMT     csv | json (export)
+  -F, --format FMT     csv | json (export); markdown|text|html2text|raw (fetch)
   -o, --output FILE    Output file (export)
   -q, --query Q        Query text (search)
       --no-verify      Don't verify emails after hunting
       --dry-run        Rehearse a run: fetch + extract, but write nothing to the DB
-      --json           Machine-readable output (list/stats/people)
+      --json           Machine-readable output (list/stats/people/fetch)
   -v, --verbose        Verbose debug logging
   -h, --help           This help
 
@@ -146,6 +158,7 @@ ENV (.env — see .env.example)
   SPIDER_API_KEY  TURSO_URL / TURSO_AUTH_TOKEN  PLUNK_API_KEY
   OPENAI_API_KEY (any OpenAI-compatible endpoint)  VERIFY_ON_HUNT
   GUESS_EMAILS (true to infer employee emails after hunts)  GITHUB_TOKEN (optional)
+  SPIDER_PROXY (true to use the premium proxy pool)  SPIDER_COUNTRY (ISO-2, e.g. us)
 `;
 
 function numFlag(flags: Record<string, string | boolean>, name: string, def: number): number {
@@ -220,6 +233,9 @@ async function main(): Promise<number> {
   const cfg: Config = loadConfig();
   cfg.verbose = !!flags.verbose;
   log.verbose = cfg.verbose;
+  if (flags["no-proxy"]) cfg.spiderProxy = false;
+  else if (flags.proxy) cfg.spiderProxy = true;
+  if (typeof flags.country === "string") cfg.spiderCountry = flags.country;
 
   // Load plugins once for commands that support them.
   let plugins: Plugin[] = [];
@@ -387,6 +403,40 @@ async function main(): Promise<number> {
         if (flags.json) console.log(JSON.stringify(rows, null, 2));
         else printPeople(rows);
         await db.close();
+        return 0;
+      }
+      case "fetch": {
+        const target = positionals[0];
+        if (!target) throw new Error("fetch needs a URL, e.g. spider-leads fetch https://zillow.com/homes/");
+        const data = await fetchStructured(cfg, target, {
+          returnFormat: typeof flags.format === "string" ? flags.format : undefined,
+          limit: numFlag(flags, "limit", 1),
+          readability: !!flags.readability,
+        });
+        if (flags.json) {
+          console.log(JSON.stringify(data, null, 2));
+          return 0;
+        }
+        log.raw("URL: " + data.url + "  (HTTP " + data.status + ")");
+        if (data.metadata?.title) log.raw("Title: " + data.metadata.title);
+        if (data.metadata?.description) log.raw("Description: " + data.metadata.description.slice(0, 200));
+        let items: any = data.css_extracted;
+        if (items == null && typeof data.content === "string") {
+          log.raw("");
+          log.raw(data.content.slice(0, 3000));
+        }
+        if (items != null) {
+          const list = Array.isArray(items) ? items : Array.isArray((items as any).items) ? (items as any).items : [items];
+          log.raw("");
+          log.raw("Items (" + list.length + "):");
+          for (const it of list.slice(0, 20)) {
+            const str = typeof it === "string"
+              ? it
+              : Object.values(it as Record<string, unknown>).slice(0, 5).map((v) => String(v ?? "")).filter(Boolean).join(" · ");
+            log.raw("  - " + str.slice(0, 180));
+          }
+        }
+        log.raw("Links: " + (data.links?.length ?? 0));
         return 0;
       }
       case "agent": {

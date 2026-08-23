@@ -38,6 +38,13 @@ Scrape any page, crawl entire sites, search the web — powered by [Spider Cloud
   mail app) or LinkedIn messages (copy & send yourself). The extension never auto-sends.
 - **AI plugin builder** — Options → Plugins → describe a plugin in plain language, the AI writes
   the JSON, you review and install it.
+- **Harder sites** — requests can go through Spider Cloud's **premium proxy pool**
+  (Options → Spider Cloud → *Premium proxy* + country code) to beat bot protection, and the
+  CLI exposes the curated [Fetch API](https://spider.cloud/api/fetch) (`spider-leads fetch
+  https://zillow.com/homes/`) for structured data on marketplace sites (Zillow, Indeed,
+  Yelp…). See the [site reachability](spider-leads/README.md#scraping-harder-sites) guide —
+  company sites / directories / GitHub / job boards work great; **Facebook is out** and
+  LinkedIn only yields public company data, never personal emails.
 - **Assist tab (approval-gated browser control)** — the AI controls the browser: navigate,
   open/close/activate/list tabs, fill application forms from your profile, set text, click
   (non-submit), scroll, copy to clipboard. You approve each action before it runs (optionally
@@ -70,7 +77,8 @@ The extension and the [spider-leads CLI](spider-leads/README.md) share one pipel
 
 1. Load the extension: chrome://extensions → Developer mode → **Load unpacked** → this folder.
 2. **Settings** (right-click the spider icon → Options, or the ⚙ in the panel):
-   - Spider Cloud API key (required for scraping)
+   - Spider Cloud API key (required for scraping) — plus optional **premium proxy**
+     (residential rotation, useful on bot-protected sites) and a **proxy country** (ISO-2)
    - BYOK AI key — pick a provider; for **DeepSeek** set the OpenAI endpoint to
      `https://api.deepseek.com/v1/chat/completions` and model `deepseek-chat`
      (or `deepseek-v4-flash` for function-calling agent mode)

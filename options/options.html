@@ -57,6 +57,14 @@
           <option value="commonmark">CommonMark</option>
         </select>
       </div>
+      <label class="checkbox-label" title="Route requests through Spider's premium proxy pool (residential rotation) — use for bot-protected sites">
+        <input type="checkbox" id="usePremiumProxy" />
+        <span>Premium proxy (residential rotation)</span>
+      </label>
+      <div class="form-group">
+        <label class="label" for="proxyCountry">Proxy country (ISO-2, e.g. <code>us</code>, <code>de</code>)</label>
+        <input type="text" id="proxyCountry" class="input" placeholder="us" maxlength="2" style="max-width:120px" />
+      </div>
       <button id="saveSpiderBtn" class="btn btn-primary">Save Spider Settings</button>
       <span id="spiderStatus" class="status-msg"></span>
     </section>

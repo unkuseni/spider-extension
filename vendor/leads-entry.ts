@@ -17,7 +17,8 @@ export type { LeadRow, PersonRow, CandidateRow } from "../spider-leads/src/db.ts
 export { verifyEmail } from "../spider-leads/src/plunk.ts";
 export type { VerificationResult } from "../spider-leads/src/types.ts";
 
-export { getSiteLinks, scrapePage, crawlPages, searchPages, extractContactsSpider } from "../spider-leads/src/spider.ts";
+export { getSiteLinks, scrapePage, crawlPages, searchPages, extractContactsSpider, fetchStructured, fetchPathFromUrl } from "../spider-leads/src/spider.ts";
+export type { FetchResult } from "../spider-leads/src/spider.ts";
 export type { PageContent, ContactRecord } from "../spider-leads/src/types.ts";
 
 export { categorizeDomain, parseContacts, CATEGORIES, chatWithTools } from "../spider-leads/src/ai.ts";

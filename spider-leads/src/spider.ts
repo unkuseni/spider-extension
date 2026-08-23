@@ -15,12 +15,25 @@ export class SpiderError extends Error {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Proxy/geo fields added to every request when configured:
+ * premium_proxy rotates through Spider's residential/ISP pool; country_code
+ * targets a country for georouting (see https://spider.cloud/docs/overview/).
+ */
+function proxyFields(cfg: Config): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (cfg.spiderProxy) out.premium_proxy = true;
+  if (cfg.spiderCountry && /^[a-z]{2}$/i.test(cfg.spiderCountry)) out.country_code = cfg.spiderCountry.toLowerCase();
+  return out;
+}
+
 async function apiPost<T>(
   cfg: Config,
   path: string,
   body: Record<string, unknown>,
   attempts = 3
 ): Promise<T> {
+  const merged = { ...proxyFields(cfg), ...body };
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     let resp: Response;
@@ -31,7 +44,7 @@ async function apiPost<T>(
           Authorization: `Bearer ${cfg.spiderApiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify(merged),
       });
     } catch (err) {
       lastErr = err;
@@ -165,4 +178,60 @@ export async function extractContactsSpider(
   });
   const arr = Array.isArray(data) ? data : [];
   return arr.filter((r: any) => r && typeof r === "object");
+}
+
+// ---------------------------------------------------------------------------
+// Fetch API (per-website scraper configs) — https://spider.cloud/api/fetch
+// POST /fetch/{domain}/{path}. First call per domain/path bootstraps an
+// AI-discovered config (selectors, schema, render mode), then hits cache.
+// ---------------------------------------------------------------------------
+
+export interface FetchResult {
+  url: string;
+  /** Extracted data in the chosen format (markdown/text) or structured JSON. */
+  content: unknown;
+  status: number;
+  metadata?: { title?: string; description?: string; keywords?: string; og_image?: string } | null;
+  /** Structured data from AI-discovered selectors. */
+  css_extracted?: unknown;
+  links?: string[];
+}
+
+export function fetchPathFromUrl(input: string): { domain: string; path: string } {
+  let u: URL;
+  try {
+    u = new URL(/^https?:\/\//i.test(input) ? input : "https://" + input);
+  } catch {
+    throw new SpiderError(0, `invalid URL: ${input}`);
+  }
+  const domain = u.hostname.replace(/^www\./, "");
+  const path = (u.pathname || "/").replace(/\/+$/, "") || "/";
+  return { domain, path };
+}
+
+/**
+ * Structured extraction through the curated/AI per-website scraper configs.
+ * Works for sites with public configs (zillow.com, indeed.com, yelp.com, …)
+ * and bootstraps new ones on the first call.
+ */
+export async function fetchStructured(
+  cfg: Config,
+  input: string,
+  opts: { returnFormat?: string; limit?: number; readability?: boolean } = {}
+): Promise<FetchResult> {
+  const { domain, path } = fetchPathFromUrl(input);
+  const body: Record<string, unknown> = { ...proxyFields(cfg) };
+  if (opts.returnFormat) body.return_format = opts.returnFormat;
+  if (opts.limit && opts.limit > 1) body.limit = opts.limit;
+  if (opts.readability) body.readability = true;
+  const data = await apiPost<any>(cfg, `/fetch/${encodeURIComponent(domain)}${encodeURI(path)}`, body);
+  if (!data || typeof data !== "object") throw new SpiderError(0, `/fetch returned no data for ${domain}${path}`);
+  return {
+    url: String(data.url ?? input),
+    content: data.content ?? null,
+    status: Number(data.status ?? 0),
+    metadata: data.metadata ?? null,
+    css_extracted: data.css_extracted ?? null,
+    links: Array.isArray(data.links) ? data.links.map(String) : [],
+  };
 }

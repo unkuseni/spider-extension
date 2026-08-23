@@ -8,6 +8,10 @@ export interface Config {
   spiderExtract: ExtractMode;
   crawlLimit: number;
   crawlDepth: number;
+  /** Send requests through Spider's premium proxy pool (residential rotation). */
+  spiderProxy: boolean;
+  /** Target a country for proxy georouting (ISO 3166-1 alpha-2, e.g. "us"). */
+  spiderCountry: string;
 
   tursoUrl: string;
   tursoAuthToken: string;
@@ -54,6 +58,8 @@ export function loadConfig(): Config {
     spiderExtract: (str("SPIDER_EXTRACT", "auto") as ExtractMode) || "auto",
     crawlLimit: num("SPIDER_CRAWL_LIMIT", 30),
     crawlDepth: num("SPIDER_CRAWL_DEPTH", 2),
+    spiderProxy: str("SPIDER_PROXY", "false") === "true",
+    spiderCountry: str("SPIDER_COUNTRY", ""),
 
     tursoUrl: tursoUrl || "file:leads.db",
     tursoAuthToken: str("TURSO_AUTH_TOKEN"),
