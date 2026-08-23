@@ -260,6 +260,15 @@
         <label class="label" for="leadsGuessPerPerson">Max candidate addresses per person (inference)</label>
         <input type="number" id="leadsGuessPerPerson" class="input" value="3" min="1" max="8" style="max-width:120px" />
       </div>
+      <div class="form-group">
+        <label class="label" for="icpInterests">ICP interests (comma-separated — lead scoring)</label>
+        <input type="text" id="icpInterests" class="input" placeholder="AI, Cloud, Fintech" />
+      </div>
+      <div class="form-group">
+        <label class="label" for="icpCategories">ICP categories (comma-separated)</label>
+        <input type="text" id="icpCategories" class="input" placeholder="SaaS / Software" />
+        <p class="small-muted">Leads at companies matching these interests/categories score higher (A-D grades).</p>
+      </div>
       <div class="form-group" style="margin-top:10px">
         <button id="saveLeadsBtn" class="btn btn-primary">Save Lead Finder Settings</button>
         <span id="leadsStatus" class="status-msg"></span>

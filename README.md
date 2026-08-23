@@ -28,11 +28,23 @@ Scrape any page, crawl entire sites, search the web — powered by [Spider Cloud
   ones become leads with a **🔮 Guessed** **Source** badge. The shared pipeline also pulls
   GitHub org members (CLI `--github`) and stores any public GitHub email directly. See
   [spider-leads](spider-leads/README.md#employee-email-discovery-inferred-emails).
+- **Lead scoring + relationships** — every lead is classified from its title into a
+  department (engineering, sales, marketing, product, operations, finance, HR, legal),
+  a seniority (exec / head / director / manager / IC / unknown), and a **decision-maker**
+  flag, then given a composite **score 0–100 + grade A–D** (`A` Hot ≥80, `B` Warm ≥65,
+  `C` Cool ≥45, `D` Cold), weighted by email veracity → seniority → company tier → ICP fit.
+  Optional **ICP rules** (Options → Lead Finder: **ICP interests / ICP categories**,
+  comma-separated) add a +12 / −10 ICP adjustment; empty means scoring without it. During
+  AI categorization the model also extracts **company relationships** (partner, client,
+  supplier, competitor, investor…) from the site's own text into a `company_relations`
+  table. The CLI's `score` recomputes grades, `relations [domain…]` prints them, and
+  `list --related-to <domain>` finds leads at related companies. See
+  [spider-leads](spider-leads/README.md#lead-scoring--relationships).
 - **AI Agent (Leads tab)** — type an objective ("find fintech companies interested in AI and
   verify their emails") and the model drives the whole workflow itself via tool calling:
   `search_web`, `extract_contacts`, `find_employees`, `guess_emails`, `categorize_company`,
-  `store_leads`, `verify_email`, `query_leads`. Requires a function-calling model (OpenAI,
-  DeepSeek `deepseek-chat` / `deepseek-v4-flash`, Groq…).
+  `find_relationships`, `score_leads`, `store_leads`, `verify_email`, `query_leads`.
+  Requires a function-calling model (OpenAI, DeepSeek `deepseek-chat` / `deepseek-v4-flash`, Groq…).
 - **Career tab** — build a profile from your resume (**PDF/DOCX/TXT**, parsed locally),
   tailor resume + cover letter to any job, get a fit score, and draft cold email (opens in your
   mail app) or LinkedIn messages (copy & send yourself). The extension never auto-sends.
@@ -82,7 +94,10 @@ The extension and the [spider-leads CLI](spider-leads/README.md) share one pipel
    - BYOK AI key — pick a provider; for **DeepSeek** set the OpenAI endpoint to
      `https://api.deepseek.com/v1/chat/completions` and model `deepseek-chat`
      (or `deepseek-v4-flash` for function-calling agent mode)
-   - Lead Finder: **Turso URL + token** (free at turso.tech) and **Plunk API key** (sk_*)
+   - Lead Finder: **Turso URL + token** (free at turso.tech) and **Plunk API key** (sk_*).
+     Optionally set **ICP interests** and **ICP categories** (comma-separated) so lead
+     scoring can favor your ideal customer profile — leave them empty to score without an
+     ICP adjustment.
 3. Open the side panel (Ctrl+Shift+Z) → **Leads** tab → enter target domains → **Hunt**.
 
 ## Browsers

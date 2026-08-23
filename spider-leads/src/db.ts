@@ -4,7 +4,7 @@
 import { createClient, type Client } from "@libsql/client";
 import type { Config } from "./config.ts";
 import type {
-  CandidateStatus, EmailCandidate, Lead, LeadStatus, Person, VerificationResult,
+  CandidateStatus, CompanyRelation, EmailCandidate, Lead, LeadStatus, Person, VerificationResult,
 } from "./types.ts";
 import { log } from "./log.ts";
 
@@ -38,6 +38,12 @@ const SCHEMA = [
     email_source TEXT,
     email_pattern TEXT,
     email_score REAL,
+    department TEXT,
+    seniority TEXT,
+    decision_maker INTEGER,
+    lead_score REAL,
+    lead_tier TEXT,
+    icp_match INTEGER,
     interests TEXT,
     source_url TEXT,
     source TEXT NOT NULL DEFAULT 'hunt',
@@ -88,6 +94,20 @@ const SCHEMA = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_candidates_domain ON email_candidates(domain)`,
   `CREATE INDEX IF NOT EXISTS idx_candidates_status ON email_candidates(status)`,
+  `CREATE TABLE IF NOT EXISTS company_relations (
+    id TEXT PRIMARY KEY,
+    from_domain TEXT NOT NULL,
+    type TEXT NOT NULL,
+    target TEXT NOT NULL,
+    target_domain TEXT,
+    evidence TEXT,
+    confidence REAL,
+    source_url TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    UNIQUE(from_domain, target, type)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_relations_from ON company_relations(from_domain)`,
+  `CREATE INDEX IF NOT EXISTS idx_relations_to ON company_relations(target_domain)`,
   `CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     target TEXT NOT NULL,
@@ -110,6 +130,12 @@ export async function initSchema(db: Client): Promise<void> {
   await ensureColumn(db, "leads", "email_source", "TEXT");
   await ensureColumn(db, "leads", "email_pattern", "TEXT");
   await ensureColumn(db, "leads", "email_score", "REAL");
+  await ensureColumn(db, "leads", "department", "TEXT");
+  await ensureColumn(db, "leads", "seniority", "TEXT");
+  await ensureColumn(db, "leads", "decision_maker", "INTEGER");
+  await ensureColumn(db, "leads", "lead_score", "REAL");
+  await ensureColumn(db, "leads", "lead_tier", "TEXT");
+  await ensureColumn(db, "leads", "icp_match", "INTEGER");
 }
 
 async function ensureColumn(db: Client, table: string, column: string, decl: string): Promise<void> {
@@ -142,8 +168,9 @@ export async function upsertLead(db: Client, lead: Lead): Promise<"new" | "updat
   await db.execute({
     sql: `INSERT INTO leads (id, email, person_name, title, phone, linkedin, company, domain,
             category, subcategory, tier, confidence, email_type, email_source, email_pattern, email_score,
+            department, seniority, decision_maker, lead_score, lead_tier, icp_match,
             interests, source_url, source, status, raw_data, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
      ON CONFLICT DO UPDATE SET
        person_name = COALESCE(excluded.person_name, leads.person_name),
        title       = COALESCE(excluded.title, leads.title),
@@ -168,6 +195,12 @@ export async function upsertLead(db: Client, lead: Lead): Promise<"new" | "updat
                       END,
        email_pattern = COALESCE(excluded.email_pattern, leads.email_pattern),
        email_score   = COALESCE(excluded.email_score, leads.email_score),
+       department    = COALESCE(excluded.department, leads.department),
+       seniority     = COALESCE(excluded.seniority, leads.seniority),
+       decision_maker = COALESCE(excluded.decision_maker, leads.decision_maker),
+       lead_score    = COALESCE(excluded.lead_score, leads.lead_score),
+       lead_tier     = COALESCE(excluded.lead_tier, leads.lead_tier),
+       icp_match     = COALESCE(excluded.icp_match, leads.icp_match),
        interests   = COALESCE(excluded.interests, leads.interests),
        source_url  = COALESCE(excluded.source_url, leads.source_url),
        raw_data    = COALESCE(excluded.raw_data, leads.raw_data),
@@ -176,10 +209,29 @@ export async function upsertLead(db: Client, lead: Lead): Promise<"new" | "updat
       id, email, lead.personName, lead.title, lead.phone, lead.linkedin, lead.company,
       lead.domain, lead.category, lead.subcategory, lead.tier, lead.confidence,
       lead.emailType, emailSource, lead.emailPattern ?? null, lead.emailScore ?? null,
+      lead.department ?? null, lead.seniority ?? null, lead.decisionMaker == null ? null : (lead.decisionMaker ? 1 : 0),
+      lead.leadScore ?? null, lead.leadTier ?? null, lead.icpMatch == null ? null : (lead.icpMatch ? 1 : 0),
       interests, lead.sourceUrl, lead.source, raw, new Date().toISOString(),
     ],
   });
   return outcome;
+}
+
+/** Recompute/persist a lead's score + role classification in place. */
+export async function updateLeadScore(
+  db: Client,
+  email: string,
+  fields: { department: string; seniority: string; decisionMaker: boolean; leadScore: number; leadTier: string; icpMatch: boolean | null }
+): Promise<void> {
+  await db.execute({
+    sql: `UPDATE leads SET department = ?, seniority = ?, decision_maker = ?, lead_score = ?,
+          lead_tier = ?, icp_match = ?, updated_at = ? WHERE email = ?`,
+    args: [
+      fields.department, fields.seniority, fields.decisionMaker ? 1 : 0,
+      fields.leadScore, fields.leadTier, fields.icpMatch == null ? null : (fields.icpMatch ? 1 : 0),
+      new Date().toISOString(), email.toLowerCase(),
+    ],
+  });
 }
 
 /** Record the outcome of a Plunk verification. */
@@ -224,6 +276,12 @@ export interface LeadRow {
   email_source: string | null;
   email_pattern: string | null;
   email_score: number | null;
+  department: string | null;
+  seniority: string | null;
+  decision_maker: number | null;
+  lead_score: number | null;
+  lead_tier: string | null;
+  icp_match: number | null;
   interests: string | null;
   source_url: string | null;
   source: string;
@@ -235,7 +293,10 @@ export interface LeadRow {
 
 export async function listLeads(
   db: Client,
-  opts: { category?: string; status?: string; emailType?: string; emailSource?: string; interest?: string; limit?: number; offset?: number } = {}
+  opts: {
+    category?: string; status?: string; emailType?: string; emailSource?: string; interest?: string;
+    department?: string; tier?: string; minScore?: number; decisionMaker?: boolean; limit?: number; offset?: number;
+  } = {}
 ): Promise<LeadRow[]> {
   const where: string[] = [];
   const args: (string | number)[] = [];
@@ -255,14 +316,31 @@ export async function listLeads(
     where.push("email_source = ?");
     args.push(opts.emailSource);
   }
+  if (opts.department) {
+    where.push("department = ?");
+    args.push(opts.department);
+  }
+  if (opts.tier) {
+    where.push("lead_tier = ?");
+    args.push(opts.tier);
+  }
+  if (opts.minScore) {
+    where.push("lead_score >= ?");
+    args.push(opts.minScore);
+  }
+  if (opts.decisionMaker === true) {
+    where.push("decision_maker = 1");
+  }
   if (opts.interest) {
     where.push("interests LIKE ?");
     args.push("%" + opts.interest + "%");
   }
   const sql = `SELECT id, email, person_name, title, phone, company, domain, category, tier,
-            confidence, email_type, email_source, email_pattern, email_score, interests, source_url, source, status, email_valid, verified_at, created_at
+            confidence, email_type, email_source, email_pattern, email_score,
+            department, seniority, decision_maker, lead_score, lead_tier, icp_match,
+            interests, source_url, source, status, email_valid, verified_at, created_at
      FROM leads ${where.length ? "WHERE " + where.join(" AND ") : ""}
-     ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+     ORDER BY lead_score DESC, created_at DESC LIMIT ? OFFSET ?`;
   args.push(opts.limit ?? 50, opts.offset ?? 0);
   const res = await db.execute({ sql, args });
   return res.rows as unknown as LeadRow[];
@@ -451,6 +529,104 @@ export async function candidatesForDomain(
   return res.rows as unknown as CandidateRow[];
 }
 
+// ---------------------------------------------------------------------------
+// Company relationships (partners/clients/competitors observed on pages)
+// ---------------------------------------------------------------------------
+
+export interface RelationRow {
+  id: string;
+  from_domain: string;
+  type: string;
+  target: string;
+  target_domain: string | null;
+  evidence: string | null;
+  confidence: number | null;
+  source_url: string | null;
+  created_at: string;
+}
+
+/** Persist one company relationship (deduped by from+target+type). */
+export async function upsertRelation(
+  db: Client,
+  fromDomain: string,
+  relation: CompanyRelation,
+  sourceUrl?: string | null
+): Promise<void> {
+  const target = (relation.target ?? "").trim();
+  if (!target) return;
+  const existing = await db.execute({
+    sql: "SELECT id FROM company_relations WHERE from_domain = ? AND lower(target) = lower(?) AND type = ?",
+    args: [fromDomain, target, relation.type],
+  });
+  const confidence = relation.confidence ?? 0.5;
+  if (existing.rows.length > 0) {
+    await db.execute({
+      sql: `UPDATE company_relations SET target_domain = COALESCE(?, target_domain),
+            evidence = COALESCE(?, evidence), confidence = MAX(confidence, ?),
+            source_url = COALESCE(?, source_url) WHERE id = ?`,
+      args: [relation.targetDomain ?? null, relation.evidence ?? null, confidence,
+        sourceUrl ?? null, String(existing.rows[0].id)],
+    });
+    return;
+  }
+  await db.execute({
+    sql: `INSERT INTO company_relations (id, from_domain, type, target, target_domain, evidence, confidence, source_url)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [crypto.randomUUID(), fromDomain, relation.type, target, relation.targetDomain ?? null,
+      relation.evidence ?? null, confidence, sourceUrl ?? null],
+  });
+}
+
+/** Relationships observed at a domain (outgoing). */
+export async function relationsForDomain(db: Client, domain: string, opts: { limit?: number } = {}): Promise<RelationRow[]> {
+  const res = await db.execute({
+    sql: "SELECT * FROM company_relations WHERE from_domain = ? ORDER BY confidence DESC LIMIT ?",
+    args: [domain, opts.limit ?? 200],
+  });
+  return res.rows as unknown as RelationRow[];
+}
+
+/** Domains related to a target domain (either direction), excluding itself. */
+export async function relatedDomainsFor(db: Client, domain: string, opts: { limit?: number } = {}): Promise<{ domain: string; type: string }[]> {
+  const res = await db.execute({
+    sql: `SELECT target_domain AS domain, type FROM company_relations
+           WHERE from_domain = ? AND target_domain IS NOT NULL AND target_domain != ?
+          UNION
+          SELECT from_domain AS domain, type FROM company_relations
+           WHERE target_domain = ? AND from_domain != ?
+          ORDER BY domain LIMIT ?`,
+    args: [domain, domain, domain, domain, opts.limit ?? 200],
+  });
+  return res.rows as unknown as { domain: string; type: string }[];
+}
+
+/** Leads at companies that are related to the given domain (partners/clients…). */
+export async function leadsRelatedTo(
+  db: Client,
+  domain: string,
+  opts: { limit?: number; minScore?: number } = {}
+): Promise<LeadRow[]> {
+  const rel = await relatedDomainsFor(db, domain, { limit: 500 });
+  if (rel.length === 0) return [];
+  const domains = [...new Set(rel.map((r) => r.domain))];
+  const placeholders = domains.map(() => "?").join(",");
+  const args: (string | number)[] = [...domains];
+  let scoreFilter = "";
+  if (opts.minScore) {
+    scoreFilter = " AND lead_score >= ?";
+    args.push(opts.minScore);
+  }
+  const res = await db.execute({
+    sql: `SELECT id, email, person_name, title, phone, company, domain, category, tier,
+            confidence, email_type, email_source, email_pattern, email_score, interests, source_url, source, status,
+            email_valid, verified_at, created_at, department, seniority, decision_maker, lead_score, lead_tier, icp_match
+     FROM leads WHERE domain IN (${placeholders})${scoreFilter}
+     ORDER BY lead_score DESC, created_at DESC LIMIT ${Number(opts.limit ?? 100)}`,
+    args,
+  });
+  return res.rows as unknown as LeadRow[];
+}
+
 export async function dbStats(db: Client): Promise<any> {
   const byStatus = await db.execute(
     `SELECT status, COUNT(*) AS n FROM leads GROUP BY status ORDER BY n DESC`
@@ -473,6 +649,9 @@ export async function dbStats(db: Client): Promise<any> {
     `SELECT COALESCE(email_source, 'unknown') AS email_source, COUNT(*) AS n
      FROM leads WHERE email IS NOT NULL GROUP BY email_source ORDER BY n DESC`
   );
+  const byGrade = await db.execute(
+    `SELECT COALESCE(lead_tier, 'none') AS lead_tier, COUNT(*) AS n FROM leads GROUP BY lead_tier ORDER BY n DESC`
+  );
   const interestRows = await db.execute(
     `SELECT interests FROM leads WHERE interests IS NOT NULL AND interests != '[]' LIMIT 5000`
   );
@@ -494,6 +673,7 @@ export async function dbStats(db: Client): Promise<any> {
     byCategory: byCategory.rows as unknown as { category: string; n: number }[],
     byEmailType: byEmailType.rows as unknown as { email_type: string; n: number }[],
     bySource: bySource.rows as unknown as { email_source: string; n: number }[],
+    byGrade: byGrade.rows as unknown as { lead_tier: string; n: number }[],
     topInterests,
     totals: (totals.rows as unknown as any[])[0],
     people: (peopleCount.rows as unknown as { people: number }[])[0]?.people ?? 0,

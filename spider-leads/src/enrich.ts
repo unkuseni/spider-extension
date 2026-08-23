@@ -5,9 +5,10 @@
 
 import type { Client } from "@libsql/client";
 import type { Config } from "./config.ts";
-import type { Categorization, EmailCandidate, EmployeeEnrichResult, Person } from "./types.ts";
+import type { Categorization, EmailCandidate, EmployeeEnrichResult, Lead, Person } from "./types.ts";
 import { candidatesForPerson, learnPatterns } from "./guess.ts";
 import { findGithubPeople } from "./github.ts";
+import { classifyTitle, icpMatch, scoreLead } from "./leadscore.ts";
 import { classifyEmailType, isValidEmail } from "./extract.ts";
 import {
   candidatesForDomain, knownEmailsForDomain, markCandidate, peopleForDomain, recordVerification,
@@ -207,6 +208,7 @@ export async function enrichDomain(
   // 4) Verify — one Plunk call per candidate, bounded concurrency.
   progress(opts, "Verifying " + candidates.length + " candidate email(s) with Plunk…");
   const byEmail = new Map(candidates.map((c) => [c.email, c]));
+  const titleByName = new Map(noEmail.map((p) => [p.name.toLowerCase(), p.title]));
   await verifyBatch(cfg, candidates.map((c) => c.email), {
     concurrency: opts.concurrency ?? 5,
     onResult: async (email, res, err) => {
@@ -223,6 +225,19 @@ export async function enrichDomain(
         if (!opts.dryRun) {
           await upsertCandidate(db, candidate);
           await markCandidate(db, email, "valid", "Plunk verified");
+          const personTitle = titleByName.get(candidate.personName.toLowerCase());
+          const interests = meta.interests ?? [];
+          const cls = classifyTitle(personTitle);
+          const icp = icpMatch(meta.category, interests.map((i) => i.topic), cfg.icpCategories, cfg.icpInterests);
+          const { score: lscore, grade } = scoreLead({
+            emailValid: 1,
+            emailScore: candidate.score,
+            emailSource: "guessed",
+            companyTier: meta.tier,
+            companyConfidence: meta.confidence,
+            icpMatch: icp,
+            title: personTitle,
+          });
           await upsertLead(db, {
             email,
             emailType: classifyEmailType(email),
@@ -230,7 +245,7 @@ export async function enrichDomain(
             emailPattern: candidate.pattern,
             emailScore: candidate.score,
             personName: candidate.personName,
-            title: null,
+            title: personTitle ?? null,
             phone: null,
             linkedin: null,
             company: meta.company ?? domain,
@@ -239,7 +254,13 @@ export async function enrichDomain(
             subcategory: meta.subcategory ?? null,
             tier: meta.tier ?? null,
             confidence: meta.confidence ?? candidate.score,
-            interests: meta.interests ?? [],
+            interests,
+            department: cls.department,
+            seniority: cls.seniority,
+            decisionMaker: cls.decisionMaker,
+            leadScore: lscore,
+            leadTier: grade,
+            icpMatch: icp,
             sourceUrl: null,
             source: "guess",
             raw: { guess: true, candidate },
@@ -276,6 +297,7 @@ async function storePublicEmail(
 ): Promise<void> {
   const email = person.email!.toLowerCase().trim();
   if (!isValidEmail(email)) return;
+  const lead = githubLead(email, person, domain, meta, cfg);
 
   // Verify before storing when verification is enabled: only real addresses
   // become leads. Without a key we store them unverified (status 'new').
@@ -287,50 +309,14 @@ async function storePublicEmail(
         log.debug("  ✗ github " + email + " invalid — not stored");
         return;
       }
-      await upsertLead(db, {
-        email,
-        emailType: classifyEmailType(email),
-        emailSource: "github",
-        personName: person.name,
-        title: person.title ?? null,
-        phone: null,
-        linkedin: person.linkedin ?? null,
-        company: meta.company ?? domain,
-        domain,
-        category: meta.category ?? null,
-        subcategory: meta.subcategory ?? null,
-        tier: meta.tier ?? null,
-        confidence: meta.confidence ?? 0.8,
-        interests: meta.interests ?? [],
-        sourceUrl: person.sourceUrl ?? null,
-        source: "github",
-        raw: { github: true, person },
-      });
+      await upsertLead(db, lead);
       await recordVerification(db, email, res);
     } catch (err) {
       result.errors.push(email + ": " + (err as Error).message);
       return;
     }
   } else {
-    await upsertLead(db, {
-      email,
-      emailType: classifyEmailType(email),
-      emailSource: "github",
-      personName: person.name,
-      title: person.title ?? null,
-      phone: null,
-      linkedin: person.linkedin ?? null,
-      company: meta.company ?? domain,
-      domain,
-      category: meta.category ?? null,
-      subcategory: meta.subcategory ?? null,
-      tier: meta.tier ?? null,
-      confidence: meta.confidence ?? 0.8,
-      interests: meta.interests ?? [],
-      sourceUrl: person.sourceUrl ?? null,
-      source: "github",
-      raw: { github: true, person },
-    });
+    await upsertLead(db, lead);
   }
   result.emails.push({
     email,
@@ -339,6 +325,53 @@ async function storePublicEmail(
     score: 0.8,
   });
   result.emailsFound++;
+}
+
+/** Build + score a lead from a GitHub public email. */
+function githubLead(
+  email: string,
+  person: Person,
+  domain: string,
+  meta: Partial<Categorization> & { company?: string },
+  cfg: Config
+): Lead {
+  const interests = meta.interests ?? [];
+  const cls = classifyTitle(person.title);
+  const icp = icpMatch(meta.category, interests.map((i) => i.topic), cfg.icpCategories, cfg.icpInterests);
+  const { score, grade } = scoreLead({
+    emailValid: null,
+    emailScore: null,
+    emailSource: "github",
+    companyTier: meta.tier,
+    companyConfidence: meta.confidence,
+    icpMatch: icp,
+    title: person.title,
+  });
+  return {
+    email,
+    emailType: classifyEmailType(email),
+    emailSource: "github",
+    personName: person.name,
+    title: person.title ?? null,
+    phone: null,
+    linkedin: person.linkedin ?? null,
+    company: meta.company ?? domain,
+    domain,
+    category: meta.category ?? null,
+    subcategory: meta.subcategory ?? null,
+    tier: meta.tier ?? null,
+    confidence: meta.confidence ?? 0.8,
+    interests,
+    department: cls.department,
+    seniority: cls.seniority,
+    decisionMaker: cls.decisionMaker,
+    leadScore: score,
+    leadTier: grade,
+    icpMatch: icp,
+    sourceUrl: person.sourceUrl ?? null,
+    source: "github",
+    raw: { github: true, person },
+  };
 }
 
 function dedupePersons(persons: Person[]): Person[] {

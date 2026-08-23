@@ -10,8 +10,9 @@ import { crawlPages, fetchStructured, getSiteLinks, searchPages, scrapePage } fr
 import { extractContactsFromSite, normalizeContacts } from "./pipeline.ts";
 import { enrichDomain } from "./enrich.ts";
 import { extractGithubOrgs } from "./people.ts";
+import { classifyTitle, icpMatch, scoreLead } from "./leadscore.ts";
 import { verifyEmail as plunkVerify } from "./plunk.ts";
-import { listLeads, recordVerification, upsertLead } from "./db.ts";
+import { listLeads, recordVerification, updateLeadScore, upsertLead, upsertRelation } from "./db.ts";
 import { log } from "./log.ts";
 
 export interface AgentToolOpts {
@@ -340,6 +341,86 @@ export function buildTools(cfg: Config, db: Client, opts: AgentToolOpts = {}): R
       },
     },
 
+    score_leads: {
+      name: "score_leads",
+      description:
+        "Recompute lead scores + role classification (department, seniority, decision maker, " +
+        "grade A-D) for stored leads, using the configured ICP rules when set. Returns the " +
+        "highest-scoring leads so the model can prioritize outreach.",
+      parameters: {
+        type: "object",
+        properties: {
+          min_score: { type: "integer", description: "Only return leads with score >= N (default 0)" },
+          limit: { type: "integer", description: "Max rows (default 10)" },
+        },
+      },
+      async run(args) {
+        const rows = await listLeads(db, { limit: 2500 });
+        let updated = 0;
+        for (const r of rows) {
+          if (!r.email) continue;
+          let interests: string[] = [];
+          try {
+            const parsed = JSON.parse(r.interests ?? "[]");
+            interests = Array.isArray(parsed) ? parsed.map((i: any) => typeof i === "string" ? i : i?.topic ?? "") : [];
+          } catch { /* ignore */ }
+          const cls = classifyTitle(r.title);
+          const icp = icpMatch(r.category, interests, cfg.icpCategories, cfg.icpInterests);
+          const { score, grade } = scoreLead({
+            emailValid: r.email_valid, emailScore: r.email_score, emailSource: r.email_source,
+            companyTier: r.tier, companyConfidence: r.confidence, icpMatch: icp, title: r.title,
+          });
+          await updateLeadScore(db, r.email, {
+            department: cls.department, seniority: cls.seniority, decisionMaker: cls.decisionMaker,
+            leadScore: score, leadTier: grade, icpMatch: icp,
+          });
+          updated++;
+        }
+        const top = await listLeads(db, {
+          minScore: Number(args.min_score) || 0,
+          limit: Number(args.limit) || 10,
+        });
+        return JSON.stringify({
+          scored: updated,
+          top: top.map((l) => ({
+            email: l.email, person: l.person_name, title: l.title, company: l.company,
+            department: l.department, seniority: l.seniority, decision_maker: l.decision_maker,
+            score: l.lead_score, grade: l.lead_tier, icp_match: l.icp_match, status: l.status,
+          })),
+        });
+      },
+    },
+
+    find_relationships: {
+      name: "find_relationships",
+      description:
+        "Discover company-to-company relationships for a domain (Partner, Client, Supplier, " +
+        "Competitor, Subsidiary, Parent, Investor) using AI over the company's pages, and " +
+        "persist them. Use this to expand a target account into its partner/client network " +
+        "(then query_leads or list related contacts).",
+      parameters: {
+        type: "object",
+        properties: {
+          domain: { type: "string", description: "Company domain, e.g. acme.com" },
+        },
+        required: ["domain"],
+      },
+      async run(args) {
+        const domain = String(args.domain ?? "").replace(/^https?:\/\//, "").replace(/\/$/, "");
+        if (!domain) return JSON.stringify({ error: "domain required" });
+        let pages: PageContent[] = [];
+        try {
+          pages = [await scrapePage(cfg, toRoot(domain), { mode: "smart" })];
+        } catch { /* try categorization with what we have */ }
+        const cat = await categorizeDomain(cfg, domain, pages);
+        const relations = (cat.relations ?? []).slice(0, 25);
+        for (const rel of relations) {
+          try { await upsertRelation(db, domain, rel, pages[0]?.url); } catch { /* ignore */ }
+        }
+        return JSON.stringify({ domain, category: cat.category, tier: cat.tier, relations });
+      },
+    },
+
     store_leads: {
       name: "store_leads",
       description:
@@ -398,6 +479,13 @@ export function buildTools(cfg: Config, db: Client, opts: AgentToolOpts = {}): R
                 typeof i === "string" ? { topic: i, confidence: 0.6 } : { topic: String(i?.topic ?? ""), confidence: Number(i?.confidence) || 0.6 }
               ).filter((i: any) => i.topic.length > 0)
             : [];
+          const interestTopics = interests.map((i: any) => i.topic);
+          const cls = classifyTitle(l.title ? String(l.title) : null);
+          const icp = icpMatch(l.category ? String(l.category) : null, interestTopics, cfg.icpCategories, cfg.icpInterests);
+          const { score, grade } = scoreLead({
+            emailValid: null, emailScore: null, emailSource: "agent",
+            companyTier: null, companyConfidence: null, icpMatch: icp, title: l.title ? String(l.title) : null,
+          });
           const lead = {
             email,
             emailType: classifyEmailType(email),
@@ -413,6 +501,12 @@ export function buildTools(cfg: Config, db: Client, opts: AgentToolOpts = {}): R
             tier: null,
             confidence: null,
             interests,
+            department: cls.department,
+            seniority: cls.seniority,
+            decisionMaker: cls.decisionMaker,
+            leadScore: score,
+            leadTier: grade,
+            icpMatch: icp,
             sourceUrl: l.source_url ? String(l.source_url) : null,
             source: "agent",
             raw: { agent: true, input: l },

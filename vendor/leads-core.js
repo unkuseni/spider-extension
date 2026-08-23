@@ -857,7 +857,96 @@ function categorizeByRules(texts) {
     confidence: Math.min(0.5 + best[2] * 0.08, 0.85),
     reason: `keyword match (${best[1]})`
   } : { category: "Other", subcategory: "", tier: "Unknown", confidence: 0.3, reason: "no strong signal" };
-  return { ...base, method: "rules", interests: extractInterestsByRules(texts) };
+  return { ...base, method: "rules", interests: extractInterestsByRules(texts), relations: extractRelationsByRules(texts) };
+}
+var RELATION_SIGNALS = [
+  [/\b(trusted by|customers include|clients include|our clients|case stud(?:y|ies)|working with|serves)\b/i, "Client"],
+  [/\b(partner(?:s|ship)?(?:s with| of|ed with| with)?|integration with|integrations? with|collaborat(?:e|ion) with|alliance)\b/i, "Partner"],
+  [/\b(powered by|built on|runs on|provided by|technology from)\b/i, "Supplier"],
+  [/\b(competitor|competes with|alternative to|vs\.?|versus)\b/i, "Competitor"],
+  [/\b(subsidiary of|a (?:subsidiary|division|company) of|part of the .+ group)\b/i, "Subsidiary"],
+  [/\b(acquired by|acquisition of)\b/i, "Parent"],
+  [/\b(invest(?:ed|or)? (?:in|by)|backed by)\b/i, "Investor"]
+];
+var NON_COMPANY_WORDS = /* @__PURE__ */ new Set([
+  "the",
+  "a",
+  "an",
+  "and",
+  "our",
+  "their",
+  "we",
+  "us",
+  "they",
+  "with",
+  "of",
+  "to",
+  "for",
+  "in",
+  "on",
+  "by",
+  "at",
+  "from",
+  "as",
+  "is",
+  "are",
+  "was",
+  "were",
+  "has",
+  "have",
+  "or",
+  "but",
+  "powered",
+  "trusted",
+  "built",
+  "provided",
+  "include",
+  "includes",
+  "including",
+  "solutions",
+  "platform",
+  "technology",
+  "technologies",
+  "software",
+  "company",
+  "companies",
+  "team"
+]);
+function extractRelationsByRules(texts) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const haystack = texts.join("\n").slice(0, 3e4);
+  const sentences = haystack.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter((s) => s.length > 10);
+  for (const sentence of sentences) {
+    for (const [re, type] of RELATION_SIGNALS) {
+      const m = sentence.match(re);
+      if (!m) continue;
+      const idx = m.index ?? 0;
+      const after = sentence.slice(idx + m[0].length);
+      const before = sentence.slice(Math.max(0, idx - 80), idx);
+      const candidate = findCompanyName(after) ?? findCompanyName(before);
+      if (!candidate) continue;
+      const key = type + ":" + candidate.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        type,
+        target: candidate,
+        evidence: sentence.slice(0, 200),
+        confidence: 0.45
+      });
+      break;
+    }
+  }
+  return out.slice(0, 12);
+}
+function findCompanyName(text) {
+  const m = text.match(/(?:^|[\s,–—-])([A-Z][A-Za-z0-9&'’.-]+(?:[\s]+[A-Z][A-Za-z0-9&'’.-]+){0,2})/);
+  if (!m) return null;
+  const words = m[1].split(/\s+/);
+  if (words.some((w) => NON_COMPANY_WORDS.has(w.toLowerCase()))) return null;
+  if (/^(Inc|LLC|Ltd|Corp|Co|Group|GmbH|AG|The)$/.test(words[words.length - 1]) && words.length === 1) return null;
+  return words.join(" ");
 }
 async function categorizeDomain(cfg, domain, pages) {
   const texts = pages.map((p) => p.markdown.slice(0, 4e3));
@@ -867,7 +956,7 @@ async function categorizeDomain(cfg, domain, pages) {
   }
   try {
     const snippet = texts.join("\n\n---\n\n").slice(0, 2e4);
-    const system = "You classify businesses for B2B lead generation. Return ONLY JSON with keys: category (one of: " + CATEGORIES.join(", ") + '), subcategory (short, e.g. "B2B marketing agency"), tier (SMB | Mid-market | Enterprise | Unknown), confidence (0-1), reason (one sentence), interests (array of 3-6 objects {topic, confidence} \u2014 topics this company or its audience cares about, e.g. "AI / Machine Learning", "Sustainability", "Developer Tools").';
+    const system = "You classify businesses for B2B lead generation. Return ONLY JSON with keys: category (one of: " + CATEGORIES.join(", ") + '), subcategory (short, e.g. "B2B marketing agency"), tier (SMB | Mid-market | Enterprise | Unknown), confidence (0-1), reason (one sentence), interests (array of 3-6 objects {topic, confidence} \u2014 topics this company or its audience cares about, e.g. "AI / Machine Learning", "Sustainability", "Developer Tools"), relations (array of objects {type, target, targetDomain, evidence, confidence} \u2014 company relationships visible on the site: Partner, Client, Supplier, Competitor, Subsidiary, Parent, Investor, Other. Include only relationships stated on the page, e.g. "trusted by Acme", "powers deployments for Globex", "in partnership with Initech". Use targetDomain when the site is named, and a short evidence snippet).';
     const user = `Classify this company. Domain: ${domain}
 
 Website content:
@@ -880,6 +969,14 @@ ${snippet}`;
       topic: String(i?.topic ?? "").trim(),
       confidence: Math.min(Math.max(Number(i?.confidence) || 0.5, 0), 1)
     })).filter((i) => i.topic.length > 0).slice(0, 8);
+    const rawRelations = Array.isArray(json.relations) ? json.relations : [];
+    const relations = rawRelations.map((r) => ({
+      type: String(r?.type ?? "Other"),
+      target: String(r?.target ?? "").trim(),
+      targetDomain: r?.targetDomain ? String(r.targetDomain).replace(/^https?:\/\//, "").replace(/\/$/, "") : void 0,
+      evidence: r?.evidence ? String(r.evidence).slice(0, 200) : void 0,
+      confidence: Math.min(Math.max(Number(r?.confidence) || 0.5, 0), 1)
+    })).filter((r) => r.target.length > 1).slice(0, 12);
     return {
       category: CATEGORIES.includes(cat) ? cat : "Other",
       subcategory: String(json.subcategory ?? ""),
@@ -887,7 +984,8 @@ ${snippet}`;
       confidence: Math.min(Math.max(Number(json.confidence) || 0.5, 0), 1),
       reason: String(json.reason ?? ""),
       method: "ai",
-      interests: interests.length > 0 ? interests : extractInterestsByRules(texts)
+      interests: interests.length > 0 ? interests : extractInterestsByRules(texts),
+      relations: relations.length > 0 ? relations : extractRelationsByRules(texts)
     };
   } catch (err) {
     log.warn(`AI categorization failed for ${domain}: ${err.message} \u2014 using rules`);
@@ -990,6 +1088,124 @@ ${snippet}`;
   }
   await flush();
   return out;
+}
+
+// spider-leads/src/leadscore.ts
+var EXEC_KEYWORDS = /\b(ceo|cto|coo|cfo|cmo|cio|cro|founder|co-founder|cofounder|owner|principal|partner|president|chairman|chair|managing director|md|vp|vice president|evp|svp|chief)\b/i;
+var HEAD_KEYWORDS = /\b(head|lead)\b\s+(of|\s)|head\s+of|head of|team lead|lead engineer|lead designer|lead developer|lead recruiter|lead\b\s+(sales|marketing|product|engineering|design|recruiting|talent|people|success|support|operations|finance|growth|business)/i;
+var DIRECTOR_KEYWORDS = /\b(director|board member|trustee|regional manager|gm)\b/i;
+var MANAGER_KEYWORDS = /\b(manager|supervisor|coordinator|lead team|team manager)\b/i;
+var SALES_KEYWORDS = /\b(sales|account executive|ae\b|sdr|bdr|business development|account manager|growth|partnerships|revenue|inside sales|sales development|customer success|success manager|renewals|closer|quota)\b/i;
+var ENGINEERING_KEYWORDS = /\b(engineer(?:ing)?|developer|software|devops|sre|platform|architect|backend|frontend|full[- ]?stack|data engineer|ml|machine learning|ai|infrastructure|qa)\b/i;
+var MARKETING_KEYWORDS = /\b(marketing|seo|content|campaign|brand|growth|social media|digital|creat(?:ive|ion)?|copywriter|pr|communications|community|demand gen|performance)\b/i;
+var PRODUCT_KEYWORDS = /\b(product|pm\b|ux|ui|designer|design|researcher|project manager|program manager)\b/i;
+var FINANCE_KEYWORDS = /\b(finance|accountant|accounting|controller|treasurer|analyst|budget|bookkeeper)\b/i;
+var HR_KEYWORDS = /\b(hr|human resources|people ops|talent|recruiter|recruiting|people partner|headcount|onboarding|training)\b/i;
+var LEGAL_KEYWORDS = /\b(legal|counsel|attorney|lawyer|compliance|paralegal)\b/i;
+var OPERATIONS_KEYWORDS = /\b(operations|ops\b|office manager|admin|administrator|support|success|logistics|procurement|facilities|front desk|reception)\b/i;
+function classifyTitle(title) {
+  const t = (title ?? "").trim();
+  const lower = t.toLowerCase();
+  if (!t) return { department: "other", seniority: "unknown", decisionMaker: false };
+  let seniority = "unknown";
+  if (EXEC_KEYWORDS.test(t)) seniority = "exec";
+  else if (HEAD_KEYWORDS.test(t)) seniority = "head";
+  else if (DIRECTOR_KEYWORDS.test(t)) seniority = "director";
+  else if (MANAGER_KEYWORDS.test(t)) seniority = "manager";
+  else if (/\b(engineer|developer|designer|analyst|associate|specialist|coordinator|representative|writer|researcher|recruiter|consultant|advisor|architect|scientist)\b/i.test(t)) seniority = "ic";
+  else seniority = "unknown";
+  const deptHits = [
+    [ENGINEERING_KEYWORDS, "engineering"],
+    [MARKETING_KEYWORDS, "marketing"],
+    [SALES_KEYWORDS, "sales"],
+    [PRODUCT_KEYWORDS, "product"],
+    [FINANCE_KEYWORDS, "finance"],
+    [HR_KEYWORDS, "hr"],
+    [LEGAL_KEYWORDS, "legal"],
+    [OPERATIONS_KEYWORDS, "operations"]
+  ];
+  let bestDept = "other";
+  let bestHits = 0;
+  for (const [re, dept] of deptHits) {
+    const hits = (lower.match(re) ?? []).length;
+    if (hits > bestHits) {
+      bestHits = hits;
+      bestDept = dept;
+    }
+  }
+  const department = bestDept;
+  const decisionMaker = seniority === "exec" || seniority === "head" || seniority === "director" || /\b(owner|founder|ceo|cto|coo|cfo|president|vp|chief|director|head of|partner)\b/i.test(t) || /\b(purchasing|procurement|decision|buyer)\b/i.test(t) || seniority === "manager" && /\b(sales|business development|growth)\b/i.test(t);
+  return { department, seniority, decisionMaker };
+}
+function seniorityWeight(s) {
+  switch (s) {
+    case "exec":
+      return 1;
+    case "head":
+      return 0.92;
+    case "director":
+      return 0.86;
+    case "manager":
+      return 0.78;
+    case "ic":
+      return 0.66;
+    default:
+      return 0.6;
+  }
+}
+function tierWeight(tier) {
+  const t = (tier ?? "").toLowerCase();
+  if (t.includes("enterprise")) return 1;
+  if (t.includes("mid")) return 0.9;
+  if (t.includes("smb") || t.includes("small")) return 0.8;
+  return 0.72;
+}
+function scoreLead(input) {
+  let emailFactor;
+  if (input.emailValid === 0) {
+    return { score: 0, grade: "D" };
+  } else if (input.emailSource === "guessed" && typeof input.emailScore === "number") {
+    emailFactor = 0.55 + 0.45 * Math.min(1, Math.max(0, input.emailScore));
+  } else if (input.emailSource === "github") {
+    emailFactor = 0.95;
+  } else if (input.emailSource === "page") {
+    emailFactor = input.emailValid === 1 ? 1 : 0.75;
+  } else {
+    emailFactor = input.emailValid === 1 ? 0.9 : 0.7;
+  }
+  const cls = classifyTitle(input.title);
+  const sr = seniorityWeight(cls.seniority);
+  const tw = tierWeight(input.companyTier);
+  const conf = Math.min(1, Math.max(0, input.companyConfidence ?? 0.5));
+  let score = 100 * emailFactor * (0.55 + 0.45 * sr) * (0.7 + 0.3 * tw) * (0.92 + 0.08 * conf);
+  if (input.icpMatch === true) score += 12;
+  else if (input.icpMatch === false) score -= 10;
+  score = Math.round(Math.min(100, Math.max(0, score)));
+  const grade = score >= 80 ? "A" : score >= 65 ? "B" : score >= 45 ? "C" : "D";
+  return { score, grade };
+}
+function gradeLabel(grade) {
+  switch (grade) {
+    case "A":
+      return "Hot";
+    case "B":
+      return "Warm";
+    case "C":
+      return "Cool";
+    default:
+      return "Cold";
+  }
+}
+function icpMatch(category, interests, icpCategories, icpInterests) {
+  if (icpCategories.length === 0 && icpInterests.length === 0) return null;
+  const cat = (category ?? "").toLowerCase();
+  if (icpCategories.length > 0 && icpCategories.some((c2) => cat.includes(c2.toLowerCase()))) return true;
+  if (icpCategories.length > 0 && cat) return false;
+  if (icpInterests.length > 0) {
+    const hay = interests.join(" ").toLowerCase();
+    return icpInterests.some((t) => hay.includes(t.toLowerCase()));
+  }
+  return false;
 }
 
 // spider-leads/src/plunk.ts
@@ -5755,6 +5971,12 @@ var SCHEMA = [
     email_source TEXT,
     email_pattern TEXT,
     email_score REAL,
+    department TEXT,
+    seniority TEXT,
+    decision_maker INTEGER,
+    lead_score REAL,
+    lead_tier TEXT,
+    icp_match INTEGER,
     interests TEXT,
     source_url TEXT,
     source TEXT NOT NULL DEFAULT 'hunt',
@@ -5805,6 +6027,20 @@ var SCHEMA = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_candidates_domain ON email_candidates(domain)`,
   `CREATE INDEX IF NOT EXISTS idx_candidates_status ON email_candidates(status)`,
+  `CREATE TABLE IF NOT EXISTS company_relations (
+    id TEXT PRIMARY KEY,
+    from_domain TEXT NOT NULL,
+    type TEXT NOT NULL,
+    target TEXT NOT NULL,
+    target_domain TEXT,
+    evidence TEXT,
+    confidence REAL,
+    source_url TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    UNIQUE(from_domain, target, type)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_relations_from ON company_relations(from_domain)`,
+  `CREATE INDEX IF NOT EXISTS idx_relations_to ON company_relations(target_domain)`,
   `CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     target TEXT NOT NULL,
@@ -5825,6 +6061,12 @@ async function initSchema(db) {
   await ensureColumn(db, "leads", "email_source", "TEXT");
   await ensureColumn(db, "leads", "email_pattern", "TEXT");
   await ensureColumn(db, "leads", "email_score", "REAL");
+  await ensureColumn(db, "leads", "department", "TEXT");
+  await ensureColumn(db, "leads", "seniority", "TEXT");
+  await ensureColumn(db, "leads", "decision_maker", "INTEGER");
+  await ensureColumn(db, "leads", "lead_score", "REAL");
+  await ensureColumn(db, "leads", "lead_tier", "TEXT");
+  await ensureColumn(db, "leads", "icp_match", "INTEGER");
 }
 async function ensureColumn(db, table, column, decl) {
   try {
@@ -5846,8 +6088,9 @@ async function upsertLead(db, lead) {
   await db.execute({
     sql: `INSERT INTO leads (id, email, person_name, title, phone, linkedin, company, domain,
             category, subcategory, tier, confidence, email_type, email_source, email_pattern, email_score,
+            department, seniority, decision_maker, lead_score, lead_tier, icp_match,
             interests, source_url, source, status, raw_data, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
      ON CONFLICT DO UPDATE SET
        person_name = COALESCE(excluded.person_name, leads.person_name),
        title       = COALESCE(excluded.title, leads.title),
@@ -5872,6 +6115,12 @@ async function upsertLead(db, lead) {
                       END,
        email_pattern = COALESCE(excluded.email_pattern, leads.email_pattern),
        email_score   = COALESCE(excluded.email_score, leads.email_score),
+       department    = COALESCE(excluded.department, leads.department),
+       seniority     = COALESCE(excluded.seniority, leads.seniority),
+       decision_maker = COALESCE(excluded.decision_maker, leads.decision_maker),
+       lead_score    = COALESCE(excluded.lead_score, leads.lead_score),
+       lead_tier     = COALESCE(excluded.lead_tier, leads.lead_tier),
+       icp_match     = COALESCE(excluded.icp_match, leads.icp_match),
        interests   = COALESCE(excluded.interests, leads.interests),
        source_url  = COALESCE(excluded.source_url, leads.source_url),
        raw_data    = COALESCE(excluded.raw_data, leads.raw_data),
@@ -5893,6 +6142,12 @@ async function upsertLead(db, lead) {
       emailSource,
       lead.emailPattern ?? null,
       lead.emailScore ?? null,
+      lead.department ?? null,
+      lead.seniority ?? null,
+      lead.decisionMaker == null ? null : lead.decisionMaker ? 1 : 0,
+      lead.leadScore ?? null,
+      lead.leadTier ?? null,
+      lead.icpMatch == null ? null : lead.icpMatch ? 1 : 0,
       interests,
       lead.sourceUrl,
       lead.source,
@@ -5901,6 +6156,22 @@ async function upsertLead(db, lead) {
     ]
   });
   return outcome;
+}
+async function updateLeadScore(db, email, fields) {
+  await db.execute({
+    sql: `UPDATE leads SET department = ?, seniority = ?, decision_maker = ?, lead_score = ?,
+          lead_tier = ?, icp_match = ?, updated_at = ? WHERE email = ?`,
+    args: [
+      fields.department,
+      fields.seniority,
+      fields.decisionMaker ? 1 : 0,
+      fields.leadScore,
+      fields.leadTier,
+      fields.icpMatch == null ? null : fields.icpMatch ? 1 : 0,
+      (/* @__PURE__ */ new Date()).toISOString(),
+      email.toLowerCase()
+    ]
+  });
 }
 async function recordVerification(db, email, res, error) {
   const status = error ? "error" : res.valid ? "verified" : "invalid";
@@ -5941,14 +6212,31 @@ async function listLeads(db, opts = {}) {
     where.push("email_source = ?");
     args.push(opts.emailSource);
   }
+  if (opts.department) {
+    where.push("department = ?");
+    args.push(opts.department);
+  }
+  if (opts.tier) {
+    where.push("lead_tier = ?");
+    args.push(opts.tier);
+  }
+  if (opts.minScore) {
+    where.push("lead_score >= ?");
+    args.push(opts.minScore);
+  }
+  if (opts.decisionMaker === true) {
+    where.push("decision_maker = 1");
+  }
   if (opts.interest) {
     where.push("interests LIKE ?");
     args.push("%" + opts.interest + "%");
   }
   const sql = `SELECT id, email, person_name, title, phone, company, domain, category, tier,
-            confidence, email_type, email_source, email_pattern, email_score, interests, source_url, source, status, email_valid, verified_at, created_at
+            confidence, email_type, email_source, email_pattern, email_score,
+            department, seniority, decision_maker, lead_score, lead_tier, icp_match,
+            interests, source_url, source, status, email_valid, verified_at, created_at
      FROM leads ${where.length ? "WHERE " + where.join(" AND ") : ""}
-     ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+     ORDER BY lead_score DESC, created_at DESC LIMIT ? OFFSET ?`;
   args.push(opts.limit ?? 50, opts.offset ?? 0);
   const res = await db.execute({ sql, args });
   return res.rows;
@@ -6098,6 +6386,84 @@ async function candidatesForDomain(db, domain, opts = {}) {
   });
   return res.rows;
 }
+async function upsertRelation(db, fromDomain, relation, sourceUrl) {
+  const target = (relation.target ?? "").trim();
+  if (!target) return;
+  const existing = await db.execute({
+    sql: "SELECT id FROM company_relations WHERE from_domain = ? AND lower(target) = lower(?) AND type = ?",
+    args: [fromDomain, target, relation.type]
+  });
+  const confidence = relation.confidence ?? 0.5;
+  if (existing.rows.length > 0) {
+    await db.execute({
+      sql: `UPDATE company_relations SET target_domain = COALESCE(?, target_domain),
+            evidence = COALESCE(?, evidence), confidence = MAX(confidence, ?),
+            source_url = COALESCE(?, source_url) WHERE id = ?`,
+      args: [
+        relation.targetDomain ?? null,
+        relation.evidence ?? null,
+        confidence,
+        sourceUrl ?? null,
+        String(existing.rows[0].id)
+      ]
+    });
+    return;
+  }
+  await db.execute({
+    sql: `INSERT INTO company_relations (id, from_domain, type, target, target_domain, evidence, confidence, source_url)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      crypto.randomUUID(),
+      fromDomain,
+      relation.type,
+      target,
+      relation.targetDomain ?? null,
+      relation.evidence ?? null,
+      confidence,
+      sourceUrl ?? null
+    ]
+  });
+}
+async function relationsForDomain(db, domain, opts = {}) {
+  const res = await db.execute({
+    sql: "SELECT * FROM company_relations WHERE from_domain = ? ORDER BY confidence DESC LIMIT ?",
+    args: [domain, opts.limit ?? 200]
+  });
+  return res.rows;
+}
+async function relatedDomainsFor(db, domain, opts = {}) {
+  const res = await db.execute({
+    sql: `SELECT target_domain AS domain, type FROM company_relations
+           WHERE from_domain = ? AND target_domain IS NOT NULL AND target_domain != ?
+          UNION
+          SELECT from_domain AS domain, type FROM company_relations
+           WHERE target_domain = ? AND from_domain != ?
+          ORDER BY domain LIMIT ?`,
+    args: [domain, domain, domain, domain, opts.limit ?? 200]
+  });
+  return res.rows;
+}
+async function leadsRelatedTo(db, domain, opts = {}) {
+  const rel = await relatedDomainsFor(db, domain, { limit: 500 });
+  if (rel.length === 0) return [];
+  const domains = [...new Set(rel.map((r) => r.domain))];
+  const placeholders = domains.map(() => "?").join(",");
+  const args = [...domains];
+  let scoreFilter = "";
+  if (opts.minScore) {
+    scoreFilter = " AND lead_score >= ?";
+    args.push(opts.minScore);
+  }
+  const res = await db.execute({
+    sql: `SELECT id, email, person_name, title, phone, company, domain, category, tier,
+            confidence, email_type, email_source, email_pattern, email_score, interests, source_url, source, status,
+            email_valid, verified_at, created_at, department, seniority, decision_maker, lead_score, lead_tier, icp_match
+     FROM leads WHERE domain IN (${placeholders})${scoreFilter}
+     ORDER BY lead_score DESC, created_at DESC LIMIT ${Number(opts.limit ?? 100)}`,
+    args
+  });
+  return res.rows;
+}
 async function dbStats(db) {
   const byStatus = await db.execute(
     `SELECT status, COUNT(*) AS n FROM leads GROUP BY status ORDER BY n DESC`
@@ -6120,6 +6486,9 @@ async function dbStats(db) {
     `SELECT COALESCE(email_source, 'unknown') AS email_source, COUNT(*) AS n
      FROM leads WHERE email IS NOT NULL GROUP BY email_source ORDER BY n DESC`
   );
+  const byGrade = await db.execute(
+    `SELECT COALESCE(lead_tier, 'none') AS lead_tier, COUNT(*) AS n FROM leads GROUP BY lead_tier ORDER BY n DESC`
+  );
   const interestRows = await db.execute(
     `SELECT interests FROM leads WHERE interests IS NOT NULL AND interests != '[]' LIMIT 5000`
   );
@@ -6139,6 +6508,7 @@ async function dbStats(db) {
     byCategory: byCategory.rows,
     byEmailType: byEmailType.rows,
     bySource: bySource.rows,
+    byGrade: byGrade.rows,
     topInterests,
     totals: totals.rows[0],
     people: peopleCount.rows[0]?.people ?? 0
@@ -6421,6 +6791,7 @@ async function enrichDomain(db, cfg, domain, opts = {}) {
   if (opts.dryRun) return result;
   progress(opts, "Verifying " + candidates.length + " candidate email(s) with Plunk\u2026");
   const byEmail = new Map(candidates.map((c2) => [c2.email, c2]));
+  const titleByName = new Map(noEmail.map((p) => [p.name.toLowerCase(), p.title]));
   await verifyBatch(cfg, candidates.map((c2) => c2.email), {
     concurrency: opts.concurrency ?? 5,
     onResult: async (email, res, err) => {
@@ -6437,6 +6808,19 @@ async function enrichDomain(db, cfg, domain, opts = {}) {
         if (!opts.dryRun) {
           await upsertCandidate(db, candidate);
           await markCandidate(db, email, "valid", "Plunk verified");
+          const personTitle = titleByName.get(candidate.personName.toLowerCase());
+          const interests = meta.interests ?? [];
+          const cls = classifyTitle(personTitle);
+          const icp = icpMatch(meta.category, interests.map((i) => i.topic), cfg.icpCategories, cfg.icpInterests);
+          const { score: lscore, grade } = scoreLead({
+            emailValid: 1,
+            emailScore: candidate.score,
+            emailSource: "guessed",
+            companyTier: meta.tier,
+            companyConfidence: meta.confidence,
+            icpMatch: icp,
+            title: personTitle
+          });
           await upsertLead(db, {
             email,
             emailType: classifyEmailType(email),
@@ -6444,7 +6828,7 @@ async function enrichDomain(db, cfg, domain, opts = {}) {
             emailPattern: candidate.pattern,
             emailScore: candidate.score,
             personName: candidate.personName,
-            title: null,
+            title: personTitle ?? null,
             phone: null,
             linkedin: null,
             company: meta.company ?? domain,
@@ -6453,7 +6837,13 @@ async function enrichDomain(db, cfg, domain, opts = {}) {
             subcategory: meta.subcategory ?? null,
             tier: meta.tier ?? null,
             confidence: meta.confidence ?? candidate.score,
-            interests: meta.interests ?? [],
+            interests,
+            department: cls.department,
+            seniority: cls.seniority,
+            decisionMaker: cls.decisionMaker,
+            leadScore: lscore,
+            leadTier: grade,
+            icpMatch: icp,
             sourceUrl: null,
             source: "guess",
             raw: { guess: true, candidate }
@@ -6481,6 +6871,7 @@ async function enrichDomain(db, cfg, domain, opts = {}) {
 async function storePublicEmail(db, cfg, domain, person, opts, result, meta) {
   const email = person.email.toLowerCase().trim();
   if (!isValidEmail(email)) return;
+  const lead = githubLead(email, person, domain, meta, cfg);
   if (opts.verify !== false && cfg.plunkApiKey) {
     try {
       const res = await verifyEmail(cfg, email);
@@ -6489,50 +6880,14 @@ async function storePublicEmail(db, cfg, domain, person, opts, result, meta) {
         log.debug("  \u2717 github " + email + " invalid \u2014 not stored");
         return;
       }
-      await upsertLead(db, {
-        email,
-        emailType: classifyEmailType(email),
-        emailSource: "github",
-        personName: person.name,
-        title: person.title ?? null,
-        phone: null,
-        linkedin: person.linkedin ?? null,
-        company: meta.company ?? domain,
-        domain,
-        category: meta.category ?? null,
-        subcategory: meta.subcategory ?? null,
-        tier: meta.tier ?? null,
-        confidence: meta.confidence ?? 0.8,
-        interests: meta.interests ?? [],
-        sourceUrl: person.sourceUrl ?? null,
-        source: "github",
-        raw: { github: true, person }
-      });
+      await upsertLead(db, lead);
       await recordVerification(db, email, res);
     } catch (err) {
       result.errors.push(email + ": " + err.message);
       return;
     }
   } else {
-    await upsertLead(db, {
-      email,
-      emailType: classifyEmailType(email),
-      emailSource: "github",
-      personName: person.name,
-      title: person.title ?? null,
-      phone: null,
-      linkedin: person.linkedin ?? null,
-      company: meta.company ?? domain,
-      domain,
-      category: meta.category ?? null,
-      subcategory: meta.subcategory ?? null,
-      tier: meta.tier ?? null,
-      confidence: meta.confidence ?? 0.8,
-      interests: meta.interests ?? [],
-      sourceUrl: person.sourceUrl ?? null,
-      source: "github",
-      raw: { github: true, person }
-    });
+    await upsertLead(db, lead);
   }
   result.emails.push({
     email,
@@ -6541,6 +6896,45 @@ async function storePublicEmail(db, cfg, domain, person, opts, result, meta) {
     score: 0.8
   });
   result.emailsFound++;
+}
+function githubLead(email, person, domain, meta, cfg) {
+  const interests = meta.interests ?? [];
+  const cls = classifyTitle(person.title);
+  const icp = icpMatch(meta.category, interests.map((i) => i.topic), cfg.icpCategories, cfg.icpInterests);
+  const { score, grade } = scoreLead({
+    emailValid: null,
+    emailScore: null,
+    emailSource: "github",
+    companyTier: meta.tier,
+    companyConfidence: meta.confidence,
+    icpMatch: icp,
+    title: person.title
+  });
+  return {
+    email,
+    emailType: classifyEmailType(email),
+    emailSource: "github",
+    personName: person.name,
+    title: person.title ?? null,
+    phone: null,
+    linkedin: person.linkedin ?? null,
+    company: meta.company ?? domain,
+    domain,
+    category: meta.category ?? null,
+    subcategory: meta.subcategory ?? null,
+    tier: meta.tier ?? null,
+    confidence: meta.confidence ?? 0.8,
+    interests,
+    department: cls.department,
+    seniority: cls.seniority,
+    decisionMaker: cls.decisionMaker,
+    leadScore: score,
+    leadTier: grade,
+    icpMatch: icp,
+    sourceUrl: person.sourceUrl ?? null,
+    source: "github",
+    raw: { github: true, person }
+  };
 }
 function dedupePersons(persons) {
   const out = [];
@@ -6734,6 +7128,18 @@ async function storeAndVerify(db, cfg, domain, company, cat, contacts, pages, op
   }
   for (const c2 of leads) {
     if (!c2.email && !c2.phone) continue;
+    const interests = cat.interests ?? [];
+    const cls = classifyTitle(c2.title);
+    const icp = icpMatch(cat.category, interests.map((i) => i.topic), cfg.icpCategories, cfg.icpInterests);
+    const { score, grade } = scoreLead({
+      emailValid: null,
+      emailScore: null,
+      emailSource: c2.email ? "page" : "unknown",
+      companyTier: cat.tier,
+      companyConfidence: cat.confidence,
+      icpMatch: icp,
+      title: c2.title
+    });
     const lead = {
       email: c2.email ?? null,
       emailType: c2.email ? classifyEmailType(c2.email) : null,
@@ -6748,7 +7154,13 @@ async function storeAndVerify(db, cfg, domain, company, cat, contacts, pages, op
       subcategory: cat.subcategory,
       tier: cat.tier,
       confidence: cat.confidence,
-      interests: cat.interests ?? [],
+      interests,
+      department: cls.department,
+      seniority: cls.seniority,
+      decisionMaker: cls.decisionMaker,
+      leadScore: score,
+      leadTier: grade,
+      icpMatch: icp,
       sourceUrl: pages[0]?.url ?? toRootUrl(domain),
       source: summary.source,
       raw: { contact: c2, category: cat }
@@ -6767,6 +7179,12 @@ async function storeAndVerify(db, cfg, domain, company, cat, contacts, pages, op
     if (opts.plugins && opts.plugins.length > 0) {
       await fireHook(opts.plugins, "onLead", { lead, outcome }, summary.errors);
     }
+  }
+  if (!opts.dryRun && cat.relations && cat.relations.length > 0) {
+    for (const rel of cat.relations) {
+      await upsertRelation(db, domain, rel, pages[0]?.url);
+    }
+    log.info("Relations: " + cat.relations.length + " recorded for " + domain);
   }
   if (opts.verify && !opts.dryRun && freshEmails.length > 0) {
     if (!cfg.plunkApiKey) {
@@ -7232,6 +7650,99 @@ function buildTools(cfg, db, opts = {}) {
         return JSON.stringify(res);
       }
     },
+    score_leads: {
+      name: "score_leads",
+      description: "Recompute lead scores + role classification (department, seniority, decision maker, grade A-D) for stored leads, using the configured ICP rules when set. Returns the highest-scoring leads so the model can prioritize outreach.",
+      parameters: {
+        type: "object",
+        properties: {
+          min_score: { type: "integer", description: "Only return leads with score >= N (default 0)" },
+          limit: { type: "integer", description: "Max rows (default 10)" }
+        }
+      },
+      async run(args) {
+        const rows = await listLeads(db, { limit: 2500 });
+        let updated = 0;
+        for (const r of rows) {
+          if (!r.email) continue;
+          let interests = [];
+          try {
+            const parsed = JSON.parse(r.interests ?? "[]");
+            interests = Array.isArray(parsed) ? parsed.map((i) => typeof i === "string" ? i : i?.topic ?? "") : [];
+          } catch {
+          }
+          const cls = classifyTitle(r.title);
+          const icp = icpMatch(r.category, interests, cfg.icpCategories, cfg.icpInterests);
+          const { score, grade } = scoreLead({
+            emailValid: r.email_valid,
+            emailScore: r.email_score,
+            emailSource: r.email_source,
+            companyTier: r.tier,
+            companyConfidence: r.confidence,
+            icpMatch: icp,
+            title: r.title
+          });
+          await updateLeadScore(db, r.email, {
+            department: cls.department,
+            seniority: cls.seniority,
+            decisionMaker: cls.decisionMaker,
+            leadScore: score,
+            leadTier: grade,
+            icpMatch: icp
+          });
+          updated++;
+        }
+        const top = await listLeads(db, {
+          minScore: Number(args.min_score) || 0,
+          limit: Number(args.limit) || 10
+        });
+        return JSON.stringify({
+          scored: updated,
+          top: top.map((l) => ({
+            email: l.email,
+            person: l.person_name,
+            title: l.title,
+            company: l.company,
+            department: l.department,
+            seniority: l.seniority,
+            decision_maker: l.decision_maker,
+            score: l.lead_score,
+            grade: l.lead_tier,
+            icp_match: l.icp_match,
+            status: l.status
+          }))
+        });
+      }
+    },
+    find_relationships: {
+      name: "find_relationships",
+      description: "Discover company-to-company relationships for a domain (Partner, Client, Supplier, Competitor, Subsidiary, Parent, Investor) using AI over the company's pages, and persist them. Use this to expand a target account into its partner/client network (then query_leads or list related contacts).",
+      parameters: {
+        type: "object",
+        properties: {
+          domain: { type: "string", description: "Company domain, e.g. acme.com" }
+        },
+        required: ["domain"]
+      },
+      async run(args) {
+        const domain = String(args.domain ?? "").replace(/^https?:\/\//, "").replace(/\/$/, "");
+        if (!domain) return JSON.stringify({ error: "domain required" });
+        let pages = [];
+        try {
+          pages = [await scrapePage(cfg, toRoot(domain), { mode: "smart" })];
+        } catch {
+        }
+        const cat = await categorizeDomain(cfg, domain, pages);
+        const relations = (cat.relations ?? []).slice(0, 25);
+        for (const rel of relations) {
+          try {
+            await upsertRelation(db, domain, rel, pages[0]?.url);
+          } catch {
+          }
+        }
+        return JSON.stringify({ domain, category: cat.category, tier: cat.tier, relations });
+      }
+    },
     store_leads: {
       name: "store_leads",
       description: "Store leads in the Turso database (deduped by email). Accepts an array of leads with email (required for email leads), person_name, title, phone, linkedin, company, domain, category, interests (array of strings or {topic, confidence} objects), source_url. Emails are validated and classified (corporate/business/student/personal) automatically.",
@@ -7284,6 +7795,18 @@ function buildTools(cfg, db, opts = {}) {
           const interests = Array.isArray(l.interests) ? l.interests.map(
             (i) => typeof i === "string" ? { topic: i, confidence: 0.6 } : { topic: String(i?.topic ?? ""), confidence: Number(i?.confidence) || 0.6 }
           ).filter((i) => i.topic.length > 0) : [];
+          const interestTopics = interests.map((i) => i.topic);
+          const cls = classifyTitle(l.title ? String(l.title) : null);
+          const icp = icpMatch(l.category ? String(l.category) : null, interestTopics, cfg.icpCategories, cfg.icpInterests);
+          const { score, grade } = scoreLead({
+            emailValid: null,
+            emailScore: null,
+            emailSource: "agent",
+            companyTier: null,
+            companyConfidence: null,
+            icpMatch: icp,
+            title: l.title ? String(l.title) : null
+          });
           const lead = {
             email,
             emailType: classifyEmailType(email),
@@ -7299,6 +7822,12 @@ function buildTools(cfg, db, opts = {}) {
             tier: null,
             confidence: null,
             interests,
+            department: cls.department,
+            seniority: cls.seniority,
+            decisionMaker: cls.decisionMaker,
+            leadScore: score,
+            leadTier: grade,
+            icpMatch: icp,
             sourceUrl: l.source_url ? String(l.source_url) : null,
             source: "agent",
             raw: { agent: true, input: l }
@@ -7345,7 +7874,7 @@ function buildTools(cfg, db, opts = {}) {
 }
 
 // spider-leads/src/agent.ts
-var SYSTEM_PROMPT = "You are an autonomous B2B lead-generation agent. You have tools for web search, site crawling, contact extraction, employee discovery, email inference (pattern-based guessing + Plunk verification), company categorization (industry + interests), email verification (Plunk), storing leads (Turso), querying stored leads, and structured fetching of marketplace/listing pages (Zillow, Indeed, Yelp).\nRules:\n- Use the tools to accomplish the user's objective. NEVER invent data: only report what tools return.\n- Typical flow: search_web to find targets \u2192 extract_contacts per target \u2192 find_employees to get names without emails \u2192 guess_emails to infer + verify their addresses \u2192 categorize_company \u2192 store_leads \u2192 verify_email for new emails (when verification is wanted).\n- fetch_structured is for curated configs / marketplace pages; extract_contacts is for company sites.\n- Never store fabricated emails. Email addresses must come from extraction results or from guess_emails (which verifies every inferred address with Plunk before storing).\n- Keep tool arguments minimal and correct; parse tool results before deciding next steps.\n- When the objective is complete (or blocked), reply with a concise final summary: targets examined, leads found/stored/updated, verified/invalid counts, categories and top interests, and any failures.";
+var SYSTEM_PROMPT = "You are an autonomous B2B lead-generation agent. You have tools for web search, site crawling, contact extraction, employee discovery, email inference (pattern-based guessing + Plunk verification), company categorization (industry + interests + company relationships), lead scoring (department/seniority/grade), email verification (Plunk), storing leads (Turso), querying stored leads, and structured fetching of marketplace/listing pages (Zillow, Indeed, Yelp).\nRules:\n- Use the tools to accomplish the user's objective. NEVER invent data: only report what tools return.\n- Typical flow: search_web to find targets \u2192 extract_contacts per target \u2192 find_employees to get names without emails \u2192 guess_emails to infer + verify their addresses \u2192 categorize_company \u2192 find_relationships to map partners/clients \u2192 score_leads \u2192 store_leads \u2192 verify_email for new emails (when verification is wanted).\n- fetch_structured is for curated configs / marketplace pages; extract_contacts is for company sites.\n- Never store fabricated emails. Email addresses must come from extraction results or from guess_emails (which verifies every inferred address with Plunk before storing).\n- Keep tool arguments minimal and correct; parse tool results before deciding next steps.\n- When the objective is complete (or blocked), reply with a concise final summary: targets examined, leads found/stored/updated, scores/grades, verified/invalid counts, categories + top interests + relationships, and any failures.";
 function countToolCalls(calls) {
   return [...calls.entries()].map(([tool, count]) => ({ tool, count }));
 }
@@ -7883,6 +8412,7 @@ export {
   categorizeDomain,
   chatWithTools,
   classifyEmailType,
+  classifyTitle,
   compileJsonPlugin,
   crawlPages,
   dbStats,
@@ -7902,12 +8432,15 @@ export {
   fetchStructured,
   findGithubPeople,
   getSiteLinks,
+  gradeLabel,
   guessLabel,
   hunt,
   huntSearch,
+  icpMatch,
   initSchema,
   isValidEmail,
   knownEmailsForDomain,
+  leadsRelatedTo,
   learnPatterns,
   listLeads,
   listPeople,
@@ -7920,8 +8453,11 @@ export {
   rankPatterns,
   recordVerification,
   registerRuleSets,
+  relatedDomainsFor,
+  relationsForDomain,
   runAgent,
   scoreFit,
+  scoreLead,
   scrapePage,
   searchPages,
   splitName,
@@ -7929,9 +8465,11 @@ export {
   tailorResume,
   toolDefs,
   unverifiedEmails,
+  updateLeadScore,
   upsertCandidate,
   upsertLead,
   upsertPerson,
+  upsertRelation,
   validateJsonPlugin,
   verifyEmail,
   verifyStored

@@ -11,8 +11,9 @@ export {
   openDb, initSchema, listLeads, dbStats, upsertLead, recordVerification, unverifiedEmails,
   upsertPerson, peopleForDomain, knownEmailsForDomain, listPeople,
   upsertCandidate, markCandidate, candidatesForDomain,
+  upsertRelation, relationsForDomain, relatedDomainsFor, leadsRelatedTo, updateLeadScore,
 } from "../spider-leads/src/db.ts";
-export type { LeadRow, PersonRow, CandidateRow } from "../spider-leads/src/db.ts";
+export type { LeadRow, PersonRow, CandidateRow, RelationRow } from "../spider-leads/src/db.ts";
 
 export { verifyEmail } from "../spider-leads/src/plunk.ts";
 export type { VerificationResult } from "../spider-leads/src/types.ts";
@@ -37,6 +38,8 @@ export type { EnrichOptions } from "../spider-leads/src/enrich.ts";
 export { candidatesForPerson, learnPatterns, rankPatterns, guessLabel } from "../spider-leads/src/guess.ts";
 export { extractNamedPeople, extractGithubOrgs, extractGithubUsers, splitName, patternOf, PATTERN_LABELS } from "../spider-leads/src/people.ts";
 export { findGithubPeople } from "../spider-leads/src/github.ts";
-export type { Person, EmailCandidate, EmployeeEnrichResult, EmailSource, CandidateStatus } from "../spider-leads/src/types.ts";
+export { classifyTitle, scoreLead, icpMatch, gradeLabel } from "../spider-leads/src/leadscore.ts";
+export type { LeadClass, ScoreInput } from "../spider-leads/src/leadscore.ts";
+export type { Person, EmailCandidate, EmployeeEnrichResult, EmailSource, CandidateStatus, CompanyRelation } from "../spider-leads/src/types.ts";
 
 export type { Config } from "../spider-leads/src/config.ts";

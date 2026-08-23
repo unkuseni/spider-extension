@@ -78,6 +78,20 @@ export interface Categorization {
   reason: string;
   method: "ai" | "rules";
   interests: Interest[];
+  /** Company-to-company relationships observed on the site (partners, clients…). */
+  relations?: CompanyRelation[];
+}
+
+/** A company-to-company relationship found on a page. */
+export interface CompanyRelation {
+  /** Partner | Client | Supplier | Competitor | Subsidiary | Parent | Investor | Other */
+  type: string;
+  /** The related company's name (or domain when known). */
+  target: string;
+  targetDomain?: string;
+  /** Page text evidence that supports the relationship. */
+  evidence?: string;
+  confidence: number;
 }
 
 export interface VerificationResult {
@@ -238,6 +252,14 @@ export interface Lead {
   tier: string | null;
   confidence: number | null;
   interests: Interest[];
+  /** Role classification (from the title). */
+  department?: string | null;
+  seniority?: string | null;
+  decisionMaker?: boolean | null;
+  /** Composite lead score 0-100 + grade A-D. */
+  leadScore?: number | null;
+  leadTier?: string | null;
+  icpMatch?: boolean | null;
   sourceUrl: string | null;
   source: string; // hunt | search
   raw: unknown;

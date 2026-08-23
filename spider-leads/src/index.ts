@@ -11,7 +11,8 @@ import { enrichDomain } from "./enrich.ts";
 import { fetchStructured } from "./spider.ts";
 import { discoverPluginsDir, installJsonPluginFile, loadPlugins, resolveNamedFilter } from "./plugins.ts";
 import type { Plugin, Person } from "./types.ts";
-import { dbStats, listLeads, listPeople } from "./db.ts";
+import { dbStats, leadsRelatedTo, listLeads, listPeople, relationsForDomain, updateLeadScore } from "./db.ts";
+import { classifyTitle, icpMatch, scoreLead } from "./leadscore.ts";
 import { domainOf, toRoot } from "./extract.ts";
 import { log } from "./log.ts";
 
@@ -41,6 +42,11 @@ const FLAGS: Flag[] = [
   { name: "per-person", takesValue: true },
   { name: "github", takesValue: true },
   { name: "domain", takesValue: true },
+  { name: "min-score", takesValue: true },
+  { name: "tier", takesValue: true },
+  { name: "department", takesValue: true },
+  { name: "decision-maker", takesValue: false },
+  { name: "related-to", takesValue: true },
   { name: "verify", takesValue: false },
   { name: "no-verify", takesValue: false },
   { name: "proxy", takesValue: false },
@@ -108,6 +114,10 @@ COMMANDS
   enrich <domain...>      Infer employee emails: discover people, learn the domain's email
                           pattern, generate candidates, verify with Plunk, store valid ones
   people                  List discovered people (--domain X, --no-email)
+  score                   Recompute lead scores + role classification for stored leads
+                          (uses ICP_INTERESTS / ICP_CATEGORIES from the environment)
+  relations [domain...]   Show company relationships (partners/clients/competitors) found
+                          by AI on the sites, plus leads at related companies
   agent <objective>       Let the AI drive the whole workflow via tool calling
                           (search_web, extract_contacts, find_employees, guess_emails,
                            categorize_company, verify_email, store_leads…)
@@ -143,6 +153,11 @@ FLAGS
   -t, --type TYPE      Filter by email type: corporate | business | student | personal
   -S, --source SOURCE  Filter by email source: page | guessed | github | agent | user
   -i, --interest TOPIC Filter by interest topic (substring match)
+      --min-score N    Only leads with lead score >= N (list)
+      --tier T         Filter by lead grade: A | B | C | D
+      --department D   Filter by role department (sales, engineering, marketing…)
+      --decision-maker Only leads who are decision makers (exec/head/director/owner…)
+      --related-to D   List leads at companies related to a domain (partners/clients…)
       --domain D       Filter by domain (people command)
       --no-email       Only people without a published email (people command)
   -F, --format FMT     csv | json (export); markdown|text|html2text|raw (fetch)
@@ -203,15 +218,20 @@ function printLeads(rows: any[]): void {
     log.info("No leads found.");
     return;
   }
-  const cols = ["email", "src", "person_name", "title", "company", "type", "category", "status", "email_valid"];
+  const cols = ["email", "src", "score", "tier", "person_name", "title", "company", "type", "category", "status"];
   const widths = cols.map((c) => Math.max(c.length, ...rows.map((r) => String(r[c] ?? "").length)));
   const pad = (s: string, w: number) => s.padEnd(w);
   log.raw(cols.map((c, i) => pad(c, widths[i])).join("  "));
   log.raw(cols.map((_, i) => "-".repeat(widths[i])).join("  "));
   for (const r of rows) {
     const vals = cols.map((c, i) => {
-      let v = String(c === "type" ? (r as any).email_type ?? "" : c === "src" ? (r as any).email_source ?? "" : r[c] ?? "");
-      if (c === "email_valid") v = v === "1" ? "✓" : v === "0" ? "✗" : "";
+      let v = String(
+        c === "type" ? (r as any).email_type ?? ""
+          : c === "src" ? (r as any).email_source ?? ""
+            : c === "score" ? (r as any).lead_score ?? ""
+              : c === "tier" ? (r as any).lead_tier ?? ""
+                : r[c] ?? ""
+      );
       return pad(v, widths[i]);
     });
     log.raw(vals.join("  "));
@@ -386,6 +406,14 @@ async function main(): Promise<number> {
           log.raw(`│  candidates      : ${res.candidatesGenerated} (${res.candidatesVerified} verified)`);
           log.raw(`│  emails found    : ${res.emailsFound}`);
           log.raw(`│  invalid         : ${res.invalid}`);
+          for (const e of (res.emails ?? []).slice(0, 15)) {
+            const { grade } = scoreLead({
+              emailValid: 1, emailScore: e.pattern === "published" ? null : e.score,
+              emailSource: e.pattern === "published" ? "github" : "guessed",
+              title: null, companyTier: null,
+            });
+            log.raw(`│    ${e.email}  [${grade}]  (${e.pattern})`);
+          }
           if (res.errors.length) log.raw(`│  errors          : ${res.errors.length} (see --verbose)`);
           log.raw("└─ done");
           for (const e of res.errors) log.warn(domain + ": " + e);
@@ -475,16 +503,95 @@ async function main(): Promise<number> {
       }
       case "list": {
         const db = await ensureDb(cfg);
-        const rows = await listLeads(db, {
-          category: typeof flags.category === "string" ? flags.category : undefined,
-          status: typeof flags.status === "string" ? flags.status : undefined,
-          emailType: typeof flags.type === "string" ? flags.type : undefined,
-          emailSource: typeof flags.source === "string" ? flags.source : undefined,
-          interest: typeof flags.interest === "string" ? flags.interest : undefined,
-          limit: numFlag(flags, "limit", 50),
-        });
+        let rows;
+        if (typeof flags["related-to"] === "string") {
+          rows = await leadsRelatedTo(db, flags["related-to"], {
+            limit: numFlag(flags, "limit", 50),
+            minScore: numFlag(flags, "min-score", 0),
+          });
+        } else {
+          rows = await listLeads(db, {
+            category: typeof flags.category === "string" ? flags.category : undefined,
+            status: typeof flags.status === "string" ? flags.status : undefined,
+            emailType: typeof flags.type === "string" ? flags.type : undefined,
+            emailSource: typeof flags.source === "string" ? flags.source : undefined,
+            interest: typeof flags.interest === "string" ? flags.interest : undefined,
+            department: typeof flags.department === "string" ? flags.department : undefined,
+            tier: typeof flags.tier === "string" ? flags.tier : undefined,
+            minScore: numFlag(flags, "min-score", 0) || undefined,
+            decisionMaker: flags["decision-maker"] ? true : undefined,
+            limit: numFlag(flags, "limit", 50),
+          });
+        }
         if (flags.json) console.log(JSON.stringify(rows, null, 2));
         else printLeads(rows);
+        await db.close();
+        return 0;
+      }
+      case "score": {
+        const db = await ensureDb(cfg);
+        const rows = await listLeads(db, { limit: 100000 });
+        let updated = 0, skipped = 0;
+        for (const r of rows) {
+          if (!r.email) { skipped++; continue; }
+          let interests: string[] = [];
+          try {
+            const parsed = JSON.parse(r.interests ?? "[]");
+            interests = Array.isArray(parsed) ? parsed.map((i: any) => typeof i === "string" ? i : i?.topic ?? "") : [];
+          } catch { /* ignore */ }
+          const cls = classifyTitle(r.title);
+          const icp = icpMatch(r.category, interests, cfg.icpCategories, cfg.icpInterests);
+          const { score, grade } = scoreLead({
+            emailValid: r.email_valid,
+            emailScore: r.email_score,
+            emailSource: r.email_source,
+            companyTier: r.tier,
+            companyConfidence: r.confidence,
+            icpMatch: icp,
+            title: r.title,
+          });
+          await updateLeadScore(db, r.email, {
+            department: cls.department, seniority: cls.seniority,
+            decisionMaker: cls.decisionMaker, leadScore: score, leadTier: grade, icpMatch: icp,
+          });
+          updated++;
+        }
+        log.ok(`Scored ${updated} lead(s) (${skipped} skipped — no email)`);
+        await db.close();
+        return 0;
+      }
+      case "relations": {
+        const db = await ensureDb(cfg);
+        const targets = positionals.length > 0 ? positionals : await (async () => {
+          const res = await db.execute("SELECT DISTINCT domain FROM company_relations");
+          return (res.rows as unknown as { domain: string }[]).map((r) => r.domain);
+        })();
+        if (targets.length === 0) {
+          log.info("No relationships recorded yet — run hunt/search first (AI extraction) or relations <domain>.");
+          await db.close();
+          return 0;
+        }
+        for (const target of targets) {
+          const domain = domainOf(toRoot(target));
+          const rows = await relationsForDomain(db, domain);
+          if (flags.json) {
+            console.log(JSON.stringify({ domain, relations: rows }, null, 2));
+            continue;
+          }
+          log.raw(`Relations for ${domain} (${rows.length}):`);
+          for (const r of rows) {
+            log.raw(`  [${r.type}] ${r.target}${r.target_domain ? " (" + r.target_domain + ")" : ""} — conf ${r.confidence?.toFixed(2)}`);
+            if (r.evidence) log.raw(`      ${r.evidence.slice(0, 140)}`);
+          }
+          // Related leads: contacts at companies that interact with this one.
+          const related = await leadsRelatedTo(db, domain, { limit: 20 });
+          if (related.length > 0) {
+            log.raw(`Leads at related companies (${related.length}):`);
+            for (const l of related) {
+              log.raw(`  ${l.email ?? ""}  ${l.person_name ?? ""}  @ ${l.company}  [${l.lead_tier ?? ""} ${l.lead_score ?? ""}]`);
+            }
+          }
+        }
         await db.close();
         return 0;
       }
@@ -504,6 +611,8 @@ async function main(): Promise<number> {
           for (const r of s.byEmailType ?? []) log.raw(`  ${String(r.email_type).padEnd(12)} ${r.n}`);
           log.raw("By email source:");
           for (const r of s.bySource ?? []) log.raw(`  ${String(r.email_source).padEnd(12)} ${r.n}`);
+          log.raw("By lead grade:");
+          for (const r of s.byGrade ?? []) log.raw(`  ${String(r.lead_tier).padEnd(12)} ${r.n}`);
           log.raw("Top interests:");
           for (const r of s.topInterests ?? []) log.raw(`  ${String(r.topic).padEnd(32)} ${r.n}`);
         }
@@ -527,7 +636,9 @@ async function main(): Promise<number> {
           await db.close();
           return 0;
         }
-        const cols = ["email", "email_source", "person_name", "title", "phone", "company", "domain", "email_type", "category", "tier", "status", "interests", "source_url", "created_at"];
+        const cols = ["email", "email_source", "person_name", "title", "company", "domain", "email_type", "category", "tier",
+          "department", "seniority", "decision_maker", "lead_score", "lead_tier", "icp_match",
+          "status", "interests", "source_url", "created_at"];
         const csv = [
           cols.join(","),
           ...rows.map((r) =>

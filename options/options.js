@@ -132,6 +132,8 @@ async function loadLeadsSettings() {
   document.getElementById('leadsVerifyOnHunt').checked = settings.verifyOnHunt !== false;
   document.getElementById('leadsGuessEmails').checked = settings.guessEmails === true;
   document.getElementById('leadsGuessPerPerson').value = settings.guessPerPerson || 3;
+  document.getElementById('icpInterests').value = settings.icpInterests || '';
+  document.getElementById('icpCategories').value = settings.icpCategories || '';
 }
 
 async function saveLeadsSettings() {
@@ -146,6 +148,8 @@ async function saveLeadsSettings() {
       verifyOnHunt: document.getElementById('leadsVerifyOnHunt').checked,
       guessEmails: document.getElementById('leadsGuessEmails').checked,
       guessPerPerson: parseInt(document.getElementById('leadsGuessPerPerson').value) || 3,
+      icpInterests: document.getElementById('icpInterests').value.trim(),
+      icpCategories: document.getElementById('icpCategories').value.trim(),
     });
     status.textContent = '✓ Lead Finder settings saved';
     status.className = 'status-msg success';

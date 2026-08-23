@@ -3,7 +3,7 @@
 // Falls back to keyword rules when no API key is configured.
 
 import type { Config } from "./config.ts";
-import type { Categorization, ContactRecord, Interest, PageContent } from "./types.ts";
+import type { Categorization, CompanyRelation, ContactRecord, Interest, PageContent } from "./types.ts";
 import { emailNameHint, extractEmails, extractLinkedin, extractPhones } from "./extract.ts";
 import { extractNamedPeople } from "./people.ts";
 import { log } from "./log.ts";
@@ -269,7 +269,74 @@ export function categorizeByRules(texts: string[]): Categorization {
         reason: `keyword match (${best[1]})`,
       }
     : { category: "Other", subcategory: "", tier: "Unknown", confidence: 0.3, reason: "no strong signal" };
-  return { ...base, method: "rules", interests: extractInterestsByRules(texts) };
+  return { ...base, method: "rules", interests: extractInterestsByRules(texts), relations: extractRelationsByRules(texts) };
+}
+
+// ---------------------------------------------------------------------------
+// Company relationships (keyword fallback when no AI key is configured)
+// ---------------------------------------------------------------------------
+
+const RELATION_SIGNALS: [RegExp, string][] = [
+  [/\b(trusted by|customers include|clients include|our clients|case stud(?:y|ies)|working with|serves)\b/i, "Client"],
+  [/\b(partner(?:s|ship)?(?:s with| of|ed with| with)?|integration with|integrations? with|collaborat(?:e|ion) with|alliance)\b/i, "Partner"],
+  [/\b(powered by|built on|runs on|provided by|technology from)\b/i, "Supplier"],
+  [/\b(competitor|competes with|alternative to|vs\.?|versus)\b/i, "Competitor"],
+  [/\b(subsidiary of|a (?:subsidiary|division|company) of|part of the .+ group)\b/i, "Subsidiary"],
+  [/\b(acquired by|acquisition of)\b/i, "Parent"],
+  [/\b(invest(?:ed|or)? (?:in|by)|backed by)\b/i, "Investor"],
+];
+
+const NON_COMPANY_WORDS = new Set([
+  "the", "a", "an", "and", "our", "their", "we", "us", "they", "with", "of", "to", "for", "in",
+  "on", "by", "at", "from", "as", "is", "are", "was", "were", "has", "have", "or", "but",
+  "powered", "trusted", "built", "provided", "include", "includes", "including", "solutions",
+  "platform", "technology", "technologies", "software", "company", "companies", "team",
+]);
+
+/**
+ * Rule-based relationship discovery: find sentences with relationship signals
+ * and pull the company name they point at. Best-effort — the AI extractor is
+ * far better; this only covers the no-AI-key case.
+ */
+export function extractRelationsByRules(texts: string[]): CompanyRelation[] {
+  const out: CompanyRelation[] = [];
+  const seen = new Set<string>();
+  const haystack = texts.join("\n").slice(0, 30000);
+  // Split into sentences (also on markdown bullet ends).
+  const sentences = haystack.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter((s) => s.length > 10);
+  for (const sentence of sentences) {
+    for (const [re, type] of RELATION_SIGNALS) {
+      const m = sentence.match(re);
+      if (!m) continue;
+      const idx = m.index ?? 0;
+      // Company name usually follows ("trusted by Acme, Globex") or precedes ("Acme teams up with").
+      const after = sentence.slice(idx + m[0].length);
+      const before = sentence.slice(Math.max(0, idx - 80), idx);
+      const candidate = findCompanyName(after) ?? findCompanyName(before);
+      if (!candidate) continue;
+      const key = type + ":" + candidate.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        type,
+        target: candidate,
+        evidence: sentence.slice(0, 200),
+        confidence: 0.45,
+      });
+      break; // one relation per sentence
+    }
+  }
+  return out.slice(0, 12);
+}
+
+/** Pull the first plausible company name (2-3 capitalized words) from text. */
+function findCompanyName(text: string): string | null {
+  const m = text.match(/(?:^|[\s,–—-])([A-Z][A-Za-z0-9&'’.-]+(?:[\s]+[A-Z][A-Za-z0-9&'’.-]+){0,2})/);
+  if (!m) return null;
+  const words = m[1].split(/\s+/);
+  if (words.some((w) => NON_COMPANY_WORDS.has(w.toLowerCase()))) return null;
+  if (/^(Inc|LLC|Ltd|Corp|Co|Group|GmbH|AG|The)$/.test(words[words.length - 1]) && words.length === 1) return null;
+  return words.join(" ");
 }
 
 export async function categorizeDomain(
@@ -289,7 +356,11 @@ export async function categorizeDomain(
       "category (one of: " + CATEGORIES.join(", ") + "), subcategory (short, e.g. \"B2B marketing agency\"), " +
       "tier (SMB | Mid-market | Enterprise | Unknown), confidence (0-1), reason (one sentence), " +
       "interests (array of 3-6 objects {topic, confidence} — topics this company or its audience cares " +
-      "about, e.g. \"AI / Machine Learning\", \"Sustainability\", \"Developer Tools\").";
+      "about, e.g. \"AI / Machine Learning\", \"Sustainability\", \"Developer Tools\"), " +
+      "relations (array of objects {type, target, targetDomain, evidence, confidence} — company relationships " +
+      "visible on the site: Partner, Client, Supplier, Competitor, Subsidiary, Parent, Investor, Other. " +
+      "Include only relationships stated on the page, e.g. \"trusted by Acme\", \"powers deployments for Globex\", " +
+      "\"in partnership with Initech\". Use targetDomain when the site is named, and a short evidence snippet).";
     const user = `Classify this company. Domain: ${domain}\n\nWebsite content:\n\n${snippet}`;
     const json = parseJsonObject(await chatJson(cfg, system, user));
     const cat = String(json.category ?? "Other");
@@ -301,6 +372,17 @@ export async function categorizeDomain(
       }))
       .filter((i) => i.topic.length > 0)
       .slice(0, 8);
+    const rawRelations: any[] = Array.isArray(json.relations) ? json.relations : [];
+    const relations: CompanyRelation[] = rawRelations
+      .map((r) => ({
+        type: String(r?.type ?? "Other"),
+        target: String(r?.target ?? "").trim(),
+        targetDomain: r?.targetDomain ? String(r.targetDomain).replace(/^https?:\/\//, "").replace(/\/$/, "") : undefined,
+        evidence: r?.evidence ? String(r.evidence).slice(0, 200) : undefined,
+        confidence: Math.min(Math.max(Number(r?.confidence) || 0.5, 0), 1),
+      }))
+      .filter((r) => r.target.length > 1)
+      .slice(0, 12);
     return {
       category: CATEGORIES.includes(cat) ? cat : "Other",
       subcategory: String(json.subcategory ?? ""),
@@ -309,6 +391,7 @@ export async function categorizeDomain(
       reason: String(json.reason ?? ""),
       method: "ai",
       interests: interests.length > 0 ? interests : extractInterestsByRules(texts),
+      relations: relations.length > 0 ? relations : extractRelationsByRules(texts),
     };
   } catch (err) {
     log.warn(`AI categorization failed for ${domain}: ${(err as Error).message} — using rules`);

@@ -43,6 +43,18 @@ ever put it in a CRM.
 8. **Verify** — each new email is sent to Plunk's `POST /v1/verify` endpoint; results
    (valid, disposable, personal, MX records, typo) are stored with the lead. Invalid
    emails are marked `invalid` and can be filtered out of exports.
+9. **Grade & score** — every lead is classified from its title into a department
+   (engineering, sales, marketing, product, operations, finance, HR, legal), a seniority
+   (exec / head / director / manager / IC / unknown), and a **decision-maker** flag, then
+   scored 0–100 with a grade **A–D** (A Hot ≥80, B Warm ≥65, C Cool ≥45, D Cold). Email
+   veracity dominates, then seniority, then company tier, then ICP fit (optional
+   `ICP_INTERESTS` / `ICP_CATEGORIES`). Invalid emails score 0 / D. See [Lead scoring &
+   relationships](#lead-scoring--relationships) below.
+10. **Relationships** — during categorization the AI reads the site's own text for
+    company-to-company relationships (e.g. "trusted by Acme", "in partnership with…") and
+    stores them in a `company_relations` table (keyword rules fall back when no AI key is
+    set). The `relations` command prints them; `list --related-to <domain>` surfaces leads
+    at related companies.
 
 ## Requirements
 
@@ -108,6 +120,21 @@ npm start -- list --category "SaaS / Software" --status verified --limit 100
 npm start -- stats
 npm start -- export leads.csv
 npm start -- export leads.json --format json
+
+# Recompute scores + grades for every stored lead (uses ICP env rules)
+npm start -- score
+
+# Show a company's relationships (partners/clients…) + leads at related companies
+npm start -- relations acme.com
+
+# Leads at companies related to a domain (partners/clients/competitors)
+npm start -- list --related-to acme.com
+
+# Only decision-makers scoring >= 80 (Hot, A-grade)
+npm start -- list --min-score 80 --decision-maker
+
+# Filter by grade / department
+npm start -- list --tier A --department sales
 ```
 
 ### Flags
@@ -133,6 +160,11 @@ npm start -- export leads.json --format json
 | `--readability` | Strip navigation/ads — main content only (`fetch`) |
 | `--domain D` | Filter by domain (`people` command) |
 | `--no-email` | Only people without a published email (`people` command) |
+| `--min-score N` | Only leads with lead score ≥ N (`list`) |
+| `--tier T` | Filter by lead grade: `A` \| `B` \| `C` \| `D` (`list`) |
+| `--department D` | Filter by role department: sales, engineering, marketing… (`list`) |
+| `--decision-maker` | Only leads who are decision makers (exec/head/director/owner…) (`list`) |
+| `--related-to D` | Leads at companies related to a domain (partners/clients…; `list`) |
 | `--dry-run` | Rehearse: fetch + extract, write nothing |
 | `-v, --verbose` | Debug logging |
 
@@ -153,10 +185,12 @@ npm start -- export leads.json --format json
 | `GUESS_PER_PERSON` | no | Max candidate addresses per person (default 3) |
 | `GITHUB_TOKEN` | no | Raises GitHub org-discovery rate limit (60/h → 5000/h) |
 | `GITHUB_API_BASE` | no | GitHub API base (default `https://api.github.com`) |
+| `ICP_INTERESTS` | no | Comma-separated ICP interest topics used in lead scoring (e.g. `AI, Cloud, Fintech`); empty = score without an ICP adjustment |
+| `ICP_CATEGORIES` | no | Comma-separated ICP categories used in lead scoring (e.g. `SaaS / Software`); matched against a lead's company category |
 
 ## Database
 
-Four tables are created by `init-db`:
+Five tables are created by `init-db`:
 
 - **leads** — one row per contact, deduped by normalized email. Columns include
   `person_name`, `title`, `phone`, `linkedin`, `company`, `domain`, `category`,
@@ -166,7 +200,9 @@ Four tables are created by `init-db`:
   `is_disposable`, `is_personal_email`, `has_mx_records`, `plunk_reasons`,
   `verified_at`), and the raw extraction as `raw_data`. Employee-inference adds
   `email_source` (`page` / `guessed` / `github` / `agent` / `user` / `unknown`),
-  `email_pattern` (e.g. `first.last`), and `email_score` (0–1 confidence).
+  `email_pattern` (e.g. `first.last`), and `email_score` (0–1 confidence). Lead scoring
+  adds `department`, `seniority`, `decision_maker`, `lead_score` (0–100), `lead_tier`
+  (A/B/C/D), and `icp_match` (0/1/null when ICP rules are unset).
 - **people** — named humans discovered on team/leadership/contact pages (or GitHub org
   members), deduped by `domain + name`, stored even when no email is published. Columns:
   `name`, `title`, `email`, `linkedin`, `github`, `domain`, `company`, `source`
@@ -176,6 +212,10 @@ Four tables are created by `init-db`:
   so addresses are never re-guessed. Columns: `email` (PK), `person_name`, `domain`,
   `pattern`, `score`, `reason`, `status` (`pending` / `valid` / `invalid` / `error`),
   `source_url`, `detail`.
+- **company_relations** — company-to-company relationships observed on a site.
+  Columns: `from_domain`, `type` (Partner / Client / Supplier / Competitor / Subsidiary /
+  Parent / Investor / Other), `target`, `target_domain`, `evidence`, `confidence`,
+  `source_url`. Deduped by `from_domain + target + type`.
 - **runs** — one row per hunt/search execution (pages crawled, leads found/verified/invalid, errors).
 
 `stats` includes a people count and an email-source breakdown (visible in `--json` output).
@@ -273,6 +313,89 @@ Enable it by default in `.env` with `GUESS_EMAILS=true`:
 > expectations and your local law (CAN-SPAM / GDPR) — verification confirms a mailbox
 > exists, it does not give you permission to contact it.
 
+## Lead scoring & relationships
+
+Every stored lead is classified from its title and given a composite **score 0–100 + grade
+A–D**, and companies are linked by the relationships they state on their own sites.
+
+### Classification
+
+`leadscore.ts` classifies each title into:
+
+| Field | Possible values |
+| --- | --- |
+| **department** | engineering, sales, marketing, product, operations, finance, hr, legal, other |
+| **seniority** | exec, head, director, manager, ic (individual contributor), unknown |
+| **decision_maker** | `true` for execs / heads / directors / owners / buyers / sales-and-manager leads |
+
+The keyword rules win ties in a fixed order (engineering > marketing > sales > product > …),
+so "Sales Engineer" is engineering while "Growth Marketing Manager" is marketing.
+
+### The score
+
+The composite score multiplies weighted factors, then applies an ICP adjustment:
+
+```
+score = 100 × emailFactor × (0.55 + 0.45 × seniority) × (0.7 + 0.3 × tier) × (0.92 + 0.08 × confidence)
+score += 12   if ICP matches     score −= 10   if ICP does not match
+score = clamp(round(score), 0, 100)
+```
+
+| Factor | Weight |
+| --- | --- |
+| **Email veracity** (dominates) | verified published 1.0 · guessed `0.55 + 0.45×confidence` · GitHub public 0.95 · published not-yet-verified 0.75 |
+| **Seniority** | exec 1.0, head 0.92, director 0.86, manager 0.78, IC 0.66, unknown 0.6 |
+| **Company tier** | Enterprise 1.0, Mid-market 0.9, SMB 0.8, Unknown 0.72 |
+| **Categorization confidence** | `0.92 + 0.08×confidence` |
+| **ICP fit** (optional) | +12 matched / −10 not matched |
+
+An **invalid email scores 0 / D** — a dead address is a dead lead. The grade is derived from
+the score (A Hot ≥80, B Warm ≥65, C Cool ≥45, D Cold):
+
+| Score | Grade | Label |
+| --- | --- | --- |
+| ≥ 80 | A | Hot |
+| ≥ 65 | B | Warm |
+| ≥ 45 | C | Cool |
+| < 45 | D | Cold |
+
+### ICP configuration
+
+Set `ICP_INTERESTS` and/or `ICP_CATEGORIES` in `.env` (comma-separated; also in the
+extension at Options → Lead Finder). When both are empty, ICP match is **unknown** and the
+score gets no adjustment. When categories are set, a lead matches if its company category
+contains any configured value; when interests are set, a lead matches if any of its stored
+interest topics contains the configured text.
+
+### Relationships
+
+During AI categorization the model returns a `relations` array parsed from the site's own text
+("trusted by Acme", "in partnership with…", "powers deployments for Globex"), with `type`
+(Partner / Client / Supplier / Competitor / Subsidiary / Parent / Investor / Other), `target`,
+`targetDomain`, `evidence`, and `confidence`. With no AI key, keyword rules provide a
+best-effort fallback. Relations are stored in `company_relations` (`from_domain`, `type`,
+`target`, `target_domain`, `evidence`, `confidence`, `source_url`) and drive `relations` and
+`list --related-to`.
+
+```bash
+# Recompute scores + grades for all stored leads (uses ICP env)
+npm start -- score
+
+# Show a domain's relationships + "Leads at related companies"
+npm start -- relations acme.com
+npm start -- relations            # every domain that has recorded relations
+
+# Leads at companies related to a domain (partners/clients/competitors)
+npm start -- list --related-to acme.com
+
+# Filter by score / grade / department / decision-maker
+npm start -- list --min-score 80 --decision-maker
+npm start -- list --tier B --department product
+```
+
+The agent also exposes `score_leads` (recompute + return the top-scoring leads) and
+`find_relationships` (AI-discover + persist a domain's relations).
+
 ## Scraping harder sites
 
 Spider Cloud's [request modes](https://spider.cloud/docs/overview/) (`smart` auto, `http`
@@ -357,7 +480,7 @@ npm start -- list && npm start -- stats
 
 ```
 src/
-  index.ts     CLI (hunt, search, fetch, enrich, people, agent, verify, list, stats, export, init-db)
+  index.ts     CLI (hunt, search, fetch, enrich, people, agent, score, relations, verify, list, stats, export, init-db)
   pipeline.ts  orchestration: links → filter → scrape → extract → categorize → store → verify
   spider.ts    Spider Cloud REST client (links, scrape, crawl, search, extract-contacts)
   ai.ts        OpenAI-compatible calls: domain categorization + contact parsing (rule fallback)
@@ -367,7 +490,9 @@ src/
   github.ts    GitHub org member discovery (public api.github.com)
   enrich.ts    employee email enrichment: discover people → guess → verify → store
   plunk.ts     Plunk /v1/verify client + batch verifier
-  db.ts        Turso schema, upserts, queries, stats, export
+  leadscore.ts role/department classification + the 0–100 composite score & A–D grade
+  db.ts        Turso schema (leads, people, email_candidates, company_relations, runs),
+               upserts, queries, stats, export
   config.ts    environment configuration
 scripts/
   mock-api.ts  local mock of Spider + Plunk + OpenAI for testing
@@ -389,6 +514,8 @@ Instead of the fixed pipeline, the model can **call tools** to decide what to do
 | `store_leads` | upsert into Turso (dedup, validation, type classification) |
 | `verify_email` | Plunk check, persisted to the stored lead |
 | `query_leads` | search stored leads |
+| `score_leads` | recompute scores + grades for stored leads, return the top-scoring |
+| `find_relationships` | AI-discover + persist a domain's company relationships (partners/clients…) |
 
 The agent loop: chat → model requests tool calls → tools execute → results fed back →
 repeat until the model answers with a summary (or the `--max-turns` budget is hit).

@@ -11,8 +11,9 @@ import {
 } from "./spider.ts";
 import { classifyEmailType, filterContactUrls, isValidEmail, domainOf, emailNameHint } from "./extract.ts";
 import { categorizeDomain, parseContacts } from "./ai.ts";
+import { classifyTitle, icpMatch, scoreLead } from "./leadscore.ts";
 import { verifyBatch } from "./plunk.ts";
-import { initSchema, openDb, recordRun, recordVerification, upsertLead, unverifiedEmails } from "./db.ts";
+import { initSchema, openDb, recordRun, recordVerification, upsertLead, upsertRelation, unverifiedEmails } from "./db.ts";
 import { enrichDomain, storePersons } from "./enrich.ts";
 import { fireHook } from "./hooks.ts";
 import type { Plugin } from "./types.ts";
@@ -221,6 +222,18 @@ async function storeAndVerify(
 
   for (const c of leads) {
     if (!c.email && !c.phone) continue; // name-only people are handled above
+    const interests = cat.interests ?? [];
+    const cls = classifyTitle(c.title);
+    const icp = icpMatch(cat.category, interests.map((i) => i.topic), cfg.icpCategories, cfg.icpInterests);
+    const { score, grade } = scoreLead({
+      emailValid: null,
+      emailScore: null,
+      emailSource: c.email ? "page" : "unknown",
+      companyTier: cat.tier,
+      companyConfidence: cat.confidence,
+      icpMatch: icp,
+      title: c.title,
+    });
     const lead = {
       email: c.email ?? null,
       emailType: c.email ? classifyEmailType(c.email) : null,
@@ -235,7 +248,13 @@ async function storeAndVerify(
       subcategory: cat.subcategory,
       tier: cat.tier,
       confidence: cat.confidence,
-      interests: cat.interests ?? [],
+      interests,
+      department: cls.department,
+      seniority: cls.seniority,
+      decisionMaker: cls.decisionMaker,
+      leadScore: score,
+      leadTier: grade,
+      icpMatch: icp,
       sourceUrl: pages[0]?.url ?? toRootUrl(domain),
       source: summary.source,
       raw: { contact: c, category: cat },
@@ -254,6 +273,14 @@ async function storeAndVerify(
     if (opts.plugins && opts.plugins.length > 0) {
       await fireHook(opts.plugins, "onLead", { lead, outcome }, summary.errors);
     }
+  }
+
+  // Company-to-company relationships found on the site (partners, clients…).
+  if (!opts.dryRun && cat.relations && cat.relations.length > 0) {
+    for (const rel of cat.relations) {
+      await upsertRelation(db, domain, rel, pages[0]?.url);
+    }
+    log.info("Relations: " + cat.relations.length + " recorded for " + domain);
   }
 
   if (opts.verify && !opts.dryRun && freshEmails.length > 0) {

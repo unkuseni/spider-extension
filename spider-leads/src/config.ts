@@ -29,6 +29,11 @@ export interface Config {
   /** GitHub API base (override for tests/proxies). */
   githubApiBase: string;
 
+  /** ICP interest topics (comma-separated) — used in lead scoring. */
+  icpInterests: string[];
+  /** ICP categories (comma-separated) — used in lead scoring. */
+  icpCategories: string[];
+
   openaiApiKey: string;
   openaiBaseUrl: string;
   openaiModel: string;
@@ -72,6 +77,9 @@ export function loadConfig(): Config {
     guessPerPerson: num("GUESS_PER_PERSON", 3),
     githubToken: str("GITHUB_TOKEN"),
     githubApiBase: str("GITHUB_API_BASE", "https://api.github.com"),
+
+    icpInterests: str("ICP_INTERESTS", "").split(",").map((s) => s.trim()).filter(Boolean),
+    icpCategories: str("ICP_CATEGORIES", "").split(",").map((s) => s.trim()).filter(Boolean),
 
     openaiApiKey: str("OPENAI_API_KEY"),
     openaiBaseUrl: str("OPENAI_BASE_URL", "https://api.openai.com/v1"),

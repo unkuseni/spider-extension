@@ -363,6 +363,10 @@ export function createMockHandler(opts: MockOptions = {}) {
             { topic: "Cloud / DevOps", confidence: 0.85 },
             { topic: "Developer Tools", confidence: 0.8 },
           ],
+          relations: [
+            { type: "Client", target: "Globex Inc", targetDomain: "globex.io", evidence: "Trusted by Globex Inc to power their deployments", confidence: 0.8 },
+            { type: "Partner", target: "Initech", targetDomain: "initech.dev", evidence: "In partnership with Initech on integrations", confidence: 0.7 },
+          ],
         });
       } else {
         const companyMatch = all.match(/Company:\s*([^\n]+)/);
