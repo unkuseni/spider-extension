@@ -63,11 +63,15 @@ async function apiPost<T>(
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
       let msg = text.slice(0, 300);
+      let creditHint = "";
       try {
         const j = JSON.parse(text);
         msg = j.error || j.message || msg;
+        if (resp.status === 402 || String(j.code ?? "").includes("credit")) {
+          creditHint = " — add credits at https://spider.cloud/credits/new (failed pages cost $0, but requests need balance; the scraper catalog & /data/scraper-directory are free)";
+        }
       } catch { /* keep text */ }
-      throw new SpiderError(resp.status, `${path} failed (${resp.status}): ${msg}`);
+      throw new SpiderError(resp.status, `${path} failed (${resp.status}): ${msg}${creditHint}`);
     }
     return (await resp.json()) as T;
   }

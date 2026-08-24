@@ -503,6 +503,9 @@ run as lead hunting.
 - Use `--filter` on big sites so only contact pages are scraped.
 - `request: http` mode (`-m http`) is cheapest for static sites.
 - Failed/blocked/timeout pages cost **zero** credits on Spider Cloud.
+- Requests still need a **positive credit balance**: an empty balance returns HTTP 402
+  (`credits_required`) on every paid route — add credits at spider.cloud/credits/new.
+  The scraper catalog (`scrapers`, `/data/scraper-directory`) is free and needs no key.
 - Spider's legacy `/pipeline/extract-contacts` is deprecated upstream (in favor of the
   Fetch API and `css_extraction_map`); the CLI treats it as best-effort and falls back
   to local AI/regex extraction automatically.
