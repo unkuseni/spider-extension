@@ -112,6 +112,15 @@ npm start -- employees acme.com --ai-studio --guess
 npm start -- scrapers --domain zillow.com
 npm start -- scrapers --limit 30 --json
 
+# Unblock a bot-protected page (cleaned content)
+npm start -- unblock https://example.com/team
+
+# Capture a full-page screenshot (PNG/JPEG/WebP)
+npm start -- screenshot https://example.com -o page.png
+
+# Transform raw HTML → markdown/text
+npm start -- transform page.html -F markdown
+
 # Verify stored leads (default: status 'new')
 npm start -- verify --concurrency 5
 
@@ -169,6 +178,11 @@ npm start -- list --tier A --department sales
 | `--no-ai-studio` | Disable AI Studio endpoints — standard extraction, no credits |
 | `--category C` | Filter the scraper catalog by category (`scrapers`) |
 | `--readability` | Strip navigation/ads — main content only (`fetch`) |
+| `--cookies C` | Send cookies (comma-separated `name=value` pairs) |
+| `--wait-for SEL` | Wait for a CSS selector before returning content |
+| `--blacklist RE` | Blacklist URL paths (comma-separated regex patterns) |
+| `--block-ads` | Block advertisements when rendering |
+| `--metadata` | Return page metadata (title, description, keywords) |
 | `--domain D` | Filter by domain (`people` command) |
 | `--no-email` | Only people without a published email (`people` command) |
 | `--min-score N` | Only leads with lead score ≥ N (`list`) |

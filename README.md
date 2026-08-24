@@ -57,6 +57,13 @@ Scrape any page, crawl entire sites, search the web — powered by [Spider Cloud
   credits apply) and falls back to the standard extractor otherwise. The **📚 Scrapers**
   button browses Spider's curated scraper-config catalog (Zillow/Indeed/Yelp…) — no key
   needed.
+- **Full Spider Cloud API coverage** — every documented endpoint is wired: `/scrape`,
+  `/crawl`, `/search`, `/links`, `/screenshot` (full-page PNG/JPEG/WebP), `/transform`
+  (HTML→markdown), `/unblocker` (bot-protection bypass), `/unlimited/*`, `/fetch`
+  (curated configs), `/ai/{scrape,crawl,search,browser,links,unblocker}` (prompt→JSON),
+  `/v1/pipeline/extract-contacts`, and `GET /data/scraper-directory` (free). All common
+  parameters thread through (`--cookies`, `--wait-for`, `--blacklist`, `--block-ads`,
+  `--metadata`, CSS extraction maps, crawl budgets, cookies, etc.).
 - **Harder sites** — requests can go through Spider Cloud's **premium proxy pool**
   (Options → Spider Cloud → *Premium proxy* + country code) to beat bot protection, and the
   CLI exposes the curated [Fetch API](https://spider.cloud/api/fetch) (`spider-leads fetch
