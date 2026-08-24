@@ -50,6 +50,86 @@ export function extractGithubUsers(text: string): string[] {
 const LINKEDIN_RE = /https?:\/\/(?:www\.)?linkedin\.com\/in\/[A-Za-z0-9_-]+/g;
 
 /**
+ * Parse a public LinkedIn company page (markdown from /scrape) into firmographic
+ * data + the employees exposed in the "Employees at <Company>" section.
+ * LinkedIn only makes a handful of employee cards public per page, but each one
+ * gives a name + profile URL — exactly what pattern-based email guessing needs.
+ */
+export function extractLinkedinCompany(markdown: string): {
+  name: string | null;
+  industry: string | null;
+  size: string | null;
+  hq: string | null;
+  website: string | null;
+  specialties: string[];
+  employeeCount: number | null;
+  employees: Person[];
+} {
+  const text = markdown.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/```+/g, "").trim();
+  const m = (re: RegExp) => text.match(re)?.[1]?.trim() ?? null;
+
+  const name = m(/^#\s*(.+?)(?:\s*\|\s*LinkedIn)?\s*$/m) || null;
+  const industry = m(/^##\s*(.+?)$/m) || null;
+  const size = m(/Company size\s*\n?\s*([^\n]+)/i) ?? null;
+  const hq = m(/Headquarters\s*\n\s*([^\n]+)/i) ?? null;
+  // LinkedIn wraps the site link in a /redir/redirect?url=<encoded> — decode it.
+  let website: string | null = null;
+  const redir = text.match(/Website\s*\n\s*\[\s*[^\]]*\]\s*\((https:\/\/www\.linkedin\.com\/redir\/redirect\?url=[^)\s]+)\)/i)
+    ?? text.match(/Website\s*\n\s*\[?\s*https?:\/\/[^\s)\]]+/i);
+  if (redir) {
+    const raw = redir[0];
+    const urlParam = raw.match(/url=([^&\s)]+)/i)?.[1];
+    if (urlParam) {
+      try { website = decodeURIComponent(urlParam); } catch { website = urlParam; }
+    } else {
+      website = raw.match(/(https?:\/\/[^\s)\]]+)/)?.[1] ?? null;
+    }
+  }
+  // "1,001-5,000 employees" → 1001 (range start = lower bound). "2,789 employees" → 2789.
+  const sizeStr = size ?? "";
+  const firstCount = sizeStr.match(/^(\d[\d,]*)/)?.[1];
+  const employeeCount = Number(firstCount?.replace(/[^\d]/g, "")) || null;
+  const specialties = (text.match(/Specialties\s*\n?\s*([^\n]+)/i)?.[1] ?? "")
+    .split(/,|\band\b/).map((s) => s.trim()).filter(Boolean).slice(0, 12);
+
+  // Employees: "Employees at <Company>" cards — a linkedin.com/in/<slug> link
+  // with the profile name on the line before or after it.
+  const employees: Person[] = [];
+  const seen = new Set<string>();
+  const lineByLine = text.split(/\r?\n/);
+  const looksLikeName = (s: string) => /^[A-Z][A-Za-zÀ-ÿ'.-]+(\s+[A-Z][A-Za-zÀ-ÿ'.-]+){1,3}$/.test(s);
+  /** Strip professional designations (P.Eng, PMP, CPA…) from a LinkedIn card name. */
+  const cleanName = (raw: string) =>
+    raw
+      .replace(/,\s*(?:P\.?\s?Eng|PMP|FOI|CPA|MBA|CFA|PhD|Ph\.?\s?D|LLM|RN|JD)\b.*$/i, "")
+      .replace(/\b(?:P\.?\s?Eng|PMP|FOI|CPA|MBA|CFA|PhD|Ph\.?\s?D)\b\.?$/i, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  for (let i = 0; i < lineByLine.length; i++) {
+    const profileMatch = lineByLine[i].match(/https?:\/\/(?:[a-z]+\.)?linkedin\.com\/in\/([A-Za-z0-9_-]+)/);
+    if (!profileMatch) continue;
+    let nameVal = "";
+    // The name usually follows the URL ("](…)\n###\nIan Flegel"), sometimes precedes it.
+    for (const cand of [
+      lineByLine.slice(i + 1, i + 4).join(" "),
+      lineByLine.slice(Math.max(0, i - 4), i).reverse().join(" "),
+    ]) {
+      const m = cand.match(/[A-Z][A-Za-zÀ-ÿ'.-]+(\s+[A-Z][A-Za-zÀ-ÿ'.-]+){1,3}/);
+      if (m && looksLikeName(m[0]) && !/^\d|^View|^See|^https?:/i.test(m[0])) { nameVal = cleanName(m[0]); break; }
+    }
+    if (!nameVal || seen.has(nameVal.toLowerCase())) continue;
+    seen.add(nameVal.toLowerCase());
+    employees.push({
+      name: nameVal,
+      linkedin: /^https?:\/\//.test(profileMatch[0]) ? profileMatch[0] : "https://" + profileMatch[0],
+      source: "linkedin",
+      notes: "public LinkedIn company page employee card",
+    });
+  }
+  return { name, industry, size, hq, website, specialties, employeeCount, employees };
+}
+
+/**
  * Regex-only people extraction (fallback when no AI key): finds lines that look
  * like "Name — Title", "Name, Title", "Name (Title)", or bullet items
  * "Name — Title" on team/leadership pages. Best-effort — the AI extractor is

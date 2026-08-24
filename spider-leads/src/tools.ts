@@ -7,7 +7,7 @@ import { categorizeDomain } from "./ai.ts";
 import type { PageContent, Person } from "./types.ts";
 import { classifyEmailType, domainOf, isValidEmail, toRoot } from "./extract.ts";
 import { crawlPages, fetchStructured, getSiteLinks, listScraperDirectory, screenshotPage, searchPages, scrapePage, transformHtml, unblockPage } from "./spider.ts";
-import { defaultRunOptions, extractContactsFromSite, findEmployees, normalizeContacts } from "./pipeline.ts";
+import { defaultRunOptions, extractContactsFromSite, findEmployees, linkedinCompany, normalizeContacts } from "./pipeline.ts";
 import { enrichDomain } from "./enrich.ts";
 import { extractGithubOrgs } from "./people.ts";
 import { classifyTitle, icpMatch, scoreLead } from "./leadscore.ts";
@@ -475,6 +475,36 @@ export function buildTools(cfg: Config, db: Client, opts: AgentToolOpts = {}): R
           format: args.format ? String(args.format) : "markdown",
         });
         return JSON.stringify({ url: page.url, status: page.status, content_preview: preview(page.markdown, 2000) });
+      },
+    },
+
+    linkedin_employees: {
+      name: "linkedin_employees",
+      description:
+        "Discover employees from a company's PUBLIC LinkedIn page: scrapes the company page " +
+        "(browser + premium proxy), extracts the employee cards LinkedIn exposes (name + " +
+        "profile URL), stores them as people, then infers + verifies their emails against the " +
+        "company's website domain using the learned email pattern (Plunk-verified when key set).",
+      parameters: {
+        type: "object",
+        properties: {
+          slug: { type: "string", description: "LinkedIn company slug, e.g. sasktel" },
+          per_person: { type: "integer", description: "Max candidates per employee (default 4)" },
+        },
+        required: ["slug"],
+      },
+      async run(args) {
+        const res = await linkedinCompany(db, cfg, String(args.slug ?? ""), {
+          verify: !!cfg.plunkApiKey,
+          perPerson: Number(args.per_person) || 4,
+        });
+        return JSON.stringify({
+          company: res.company, industry: res.industry, size: res.size, hq: res.hq,
+          employeeCount: res.employeeCount, website: res.website, domain: res.domain,
+          employeesFound: res.employeesFound, peopleStored: res.peopleStored,
+          emailsFound: res.emailsFound, emails: res.emails.slice(0, 20),
+          errors: res.errors,
+        });
       },
     },
 

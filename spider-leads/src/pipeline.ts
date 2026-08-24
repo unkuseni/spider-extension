@@ -15,6 +15,7 @@ import { classifyTitle, icpMatch, scoreLead } from "./leadscore.ts";
 import { verifyBatch } from "./plunk.ts";
 import { initSchema, leadRowByEmail, openDb, recordRun, recordVerification, updateLeadScore, upsertLead, upsertRelation, unverifiedEmails } from "./db.ts";
 import { enrichDomain, storePersons } from "./enrich.ts";
+import { extractLinkedinCompany } from "./people.ts";
 import { fireHook } from "./hooks.ts";
 import type { Plugin } from "./types.ts";
 import { log } from "./log.ts";
@@ -727,4 +728,110 @@ export async function findEmployees(
     mergeRun(merged, summary);
   }
   return merged;
+}
+
+// ---------------------------------------------------------------------------
+// LinkedIn company-page employee discovery (public pages only).
+// Scrapes the public company page (browser + premium proxy), extracts the
+// employee cards LinkedIn exposes there, stores them as people, then enriches
+// the company's website domain: learns the email pattern from known addresses
+// and guesses + (with a Plunk key) verifies the employees' emails.
+// ---------------------------------------------------------------------------
+
+export interface LinkedinCompanyResult {
+  company: string | null;
+  industry: string | null;
+  size: string | null;
+  hq: string | null;
+  employeeCount: number | null;
+  specialties: string[];
+  website: string | null;
+  employeesFound: number;
+  /** Names stored in the people table. */
+  peopleStored: number;
+  domain: string | null;
+  guessesMade: number;
+  emailsFound: number;
+  emails: { email: string; personName: string; pattern: string; score: number }[];
+  errors: string[];
+}
+
+function linkedinSlug(input: string): string {
+  return input
+    .replace(/^https?:\/\/(?:www\.)?linkedin\.com\/company\//i, "")
+    .replace(/^https?:\/\/(?:www\.)?linkedin\.com\//i, "")
+    .replace(/\/.*$/, "")
+    .trim();
+}
+
+export async function linkedinCompany(
+  db: Client,
+  cfg: Config,
+  slug: string,
+  opts: { verify?: boolean; perPerson?: number; mode?: RequestMode } = {}
+): Promise<LinkedinCompanyResult> {
+  requireSpiderKey(cfg);
+  const clean = linkedinSlug(slug);
+  if (!clean) throw new Error("invalid LinkedIn company slug: " + slug);
+  const url = `https://www.linkedin.com/company/${encodeURIComponent(clean)}`;
+  const result: LinkedinCompanyResult = {
+    company: null, industry: null, size: null, hq: null, employeeCount: null,
+    specialties: [], website: null, employeesFound: 0, peopleStored: 0,
+    domain: null, guessesMade: 0, emailsFound: 0, emails: [], errors: [],
+  };
+
+  log.step("LinkedIn company page: " + url);
+  const page = await scrapePage(cfg, url, {
+    mode: opts.mode ?? "browser",
+    params: { premiumProxy: true, waitForSelector: ".org-top-card-summary" },
+  });
+  const info = extractLinkedinCompany(page.markdown);
+  result.company = info.name;
+  result.industry = info.industry;
+  result.size = info.size;
+  result.hq = info.hq;
+  result.employeeCount = info.employeeCount;
+  result.specialties = info.specialties;
+  result.website = info.website;
+  result.employeesFound = info.employees.length;
+  log.info(`LinkedIn: ${info.name ?? clean} · ${info.industry ?? "?"} · ${info.size ?? "?"}` +
+    (info.employeeCount ? ` · ${info.employeeCount} employees` : "") +
+    ` · ${info.employees.length} exposed employee card(s)`);
+
+  if (info.employees.length === 0) {
+    log.warn("No employee cards exposed on the public page (the roster section is login-gated).");
+    return result;
+  }
+  if (!info.website) {
+    log.warn("No website on the LinkedIn page — cannot map employees to an email domain.");
+  }
+
+  const companyName = info.name ?? clean;
+  const domain = info.website ? domainOf(info.website) : null;
+  result.domain = domain;
+  if (domain) {
+    const { newPeople } = await storePersons(db, domain, info.employees, companyName);
+    result.peopleStored = newPeople;
+    log.info(`Stored ${newPeople} employee(s) at ${domain}`);
+    // Enrich: learn the domain's convention from any known emails, infer the
+    // employees' addresses, verify with Plunk when configured.
+    const res = await enrichDomain(db, cfg, domain, {
+      people: info.employees,
+      verify: opts.verify !== false,
+      perPerson: opts.perPerson ?? 4,
+      meta: { company: companyName, category: info.industry ?? undefined },
+    });
+    result.guessesMade = res.candidatesVerified;
+    result.emailsFound = res.emailsFound;
+    result.emails = res.emails ?? [];
+    result.errors.push(...res.errors);
+    log.ok(`Employee email inference: ${res.emailsFound} found (${res.candidatesVerified} verified, ${res.invalid} invalid).`);
+  } else {
+    // No domain — store the employees against the company slug so enrich/people
+    // still record the discovery (people table is keyed by domain, so fall back
+    // to the slug for traceability).
+    const { newPeople } = await storePersons(db, clean, info.employees, companyName);
+    result.peopleStored = newPeople;
+  }
+  return result;
 }

@@ -4,7 +4,7 @@
 import type { Config } from "./config.ts";
 import { extractMode, loadConfig, requestMode } from "./config.ts";
 import {
-  defaultRunOptions, ensureDb, extractContactsFromSite, findEmployees, hunt, huntSearch, verifyStored,
+  defaultRunOptions, ensureDb, extractContactsFromSite, findEmployees, hunt, huntSearch, linkedinCompany, verifyStored,
 } from "./pipeline.ts";
 import { runAgent } from "./agent.ts";
 import { enrichDomain } from "./enrich.ts";
@@ -125,6 +125,9 @@ COMMANDS
   employees <domain...>   Employee scraper: extract a site's people (names/titles/emails
                           via AI Studio prompt → JSON when enabled; standard pipeline
                           otherwise), store them as people/leads, optionally infer emails
+  linkedin <slug>         Public LinkedIn company page → firmographics + employee cards
+                          (names + profiles) → people → infer + verify emails against the
+                          company's website domain (needs a Plunk key for verification)
   scrapers [--domain D]   Browse Spider's scraper-directory config catalog (no auth)
   enrich <domain...>      Infer employee emails: discover people, learn the domain's email
                           pattern, generate candidates, verify with Plunk, store valid ones
@@ -497,6 +500,34 @@ async function main(): Promise<number> {
         const { listLeads: ll } = await import("./db.ts");
         for (const r of await ll(db, { minScore: 0, limit: 10 })) {
           log.raw(`  ${r.email ?? "(no email)"} · ${r.person_name ?? ""} ${r.title ?? ""} @ ${r.company ?? r.domain} [${r.lead_tier ?? "-"} ${r.lead_score ?? ""}]`);
+        }
+        await db.close();
+        return 0;
+      }
+      case "linkedin": {
+        const slug = positionals[0];
+        if (!slug) throw new Error("linkedin needs a company slug, e.g. spider-leads linkedin sasktel");
+        const db = await ensureDb(cfg);
+        const res = await linkedinCompany(db, cfg, slug, {
+          verify: !flags["no-verify"],
+          perPerson: numFlag(flags, "per-person", cfg.guessPerPerson),
+        });
+        log.raw("");
+        log.raw(`┌─ LinkedIn: ${res.company ?? slug}`);
+        if (res.industry) log.raw(`│  industry      : ${res.industry}`);
+        if (res.size || res.employeeCount) log.raw(`│  size          : ${res.size ?? ""}${res.employeeCount ? " (~" + res.employeeCount + ")" : ""}`);
+        if (res.hq) log.raw(`│  headquarters  : ${res.hq}`);
+        if (res.website) log.raw(`│  website       : ${res.website}`);
+        log.raw(`│  employees     : ${res.employeesFound} exposed card(s), ${res.peopleStored} stored`);
+        if (res.domain) log.raw(`│  email domain  : ${res.domain} (${res.emailsFound} found, ${res.guessesMade} verified)`);
+        for (const e of res.emails.slice(0, 15)) log.raw(`│    ${e.email}  [${e.pattern}] ${e.personName}`);
+        for (const err of res.errors) log.warn("linkedin: " + err);
+        log.raw("└─ done");
+        const { listLeads: ll } = await import("./db.ts");
+        if (res.domain) {
+          for (const r of await ll(db, { emailSource: "page", limit: 20 })) {
+            if (r.domain === res.domain) log.raw(`  stored: ${r.email} · ${r.person_name ?? ""} [${r.lead_tier ?? "-"} ${r.lead_score ?? ""}]`);
+          }
         }
         await db.close();
         return 0;

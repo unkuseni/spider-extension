@@ -764,6 +764,62 @@ function extractGithubUsers(text) {
   return [...users];
 }
 var LINKEDIN_RE2 = /https?:\/\/(?:www\.)?linkedin\.com\/in\/[A-Za-z0-9_-]+/g;
+function extractLinkedinCompany(markdown) {
+  const text = markdown.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/```+/g, "").trim();
+  const m = (re) => text.match(re)?.[1]?.trim() ?? null;
+  const name = m(/^#\s*(.+?)(?:\s*\|\s*LinkedIn)?\s*$/m) || null;
+  const industry = m(/^##\s*(.+?)$/m) || null;
+  const size = m(/Company size\s*\n?\s*([^\n]+)/i) ?? null;
+  const hq = m(/Headquarters\s*\n\s*([^\n]+)/i) ?? null;
+  let website = null;
+  const redir = text.match(/Website\s*\n\s*\[\s*[^\]]*\]\s*\((https:\/\/www\.linkedin\.com\/redir\/redirect\?url=[^)\s]+)\)/i) ?? text.match(/Website\s*\n\s*\[?\s*https?:\/\/[^\s)\]]+/i);
+  if (redir) {
+    const raw = redir[0];
+    const urlParam = raw.match(/url=([^&\s)]+)/i)?.[1];
+    if (urlParam) {
+      try {
+        website = decodeURIComponent(urlParam);
+      } catch {
+        website = urlParam;
+      }
+    } else {
+      website = raw.match(/(https?:\/\/[^\s)\]]+)/)?.[1] ?? null;
+    }
+  }
+  const sizeStr = size ?? "";
+  const firstCount = sizeStr.match(/^(\d[\d,]*)/)?.[1];
+  const employeeCount = Number(firstCount?.replace(/[^\d]/g, "")) || null;
+  const specialties = (text.match(/Specialties\s*\n?\s*([^\n]+)/i)?.[1] ?? "").split(/,|\band\b/).map((s) => s.trim()).filter(Boolean).slice(0, 12);
+  const employees = [];
+  const seen = /* @__PURE__ */ new Set();
+  const lineByLine = text.split(/\r?\n/);
+  const looksLikeName = (s) => /^[A-Z][A-Za-zÀ-ÿ'.-]+(\s+[A-Z][A-Za-zÀ-ÿ'.-]+){1,3}$/.test(s);
+  const cleanName = (raw) => raw.replace(/,\s*(?:P\.?\s?Eng|PMP|FOI|CPA|MBA|CFA|PhD|Ph\.?\s?D|LLM|RN|JD)\b.*$/i, "").replace(/\b(?:P\.?\s?Eng|PMP|FOI|CPA|MBA|CFA|PhD|Ph\.?\s?D)\b\.?$/i, "").replace(/\s{2,}/g, " ").trim();
+  for (let i = 0; i < lineByLine.length; i++) {
+    const profileMatch = lineByLine[i].match(/https?:\/\/(?:[a-z]+\.)?linkedin\.com\/in\/([A-Za-z0-9_-]+)/);
+    if (!profileMatch) continue;
+    let nameVal = "";
+    for (const cand of [
+      lineByLine.slice(i + 1, i + 4).join(" "),
+      lineByLine.slice(Math.max(0, i - 4), i).reverse().join(" ")
+    ]) {
+      const m2 = cand.match(/[A-Z][A-Za-zÀ-ÿ'.-]+(\s+[A-Z][A-Za-zÀ-ÿ'.-]+){1,3}/);
+      if (m2 && looksLikeName(m2[0]) && !/^\d|^View|^See|^https?:/i.test(m2[0])) {
+        nameVal = cleanName(m2[0]);
+        break;
+      }
+    }
+    if (!nameVal || seen.has(nameVal.toLowerCase())) continue;
+    seen.add(nameVal.toLowerCase());
+    employees.push({
+      name: nameVal,
+      linkedin: /^https?:\/\//.test(profileMatch[0]) ? profileMatch[0] : "https://" + profileMatch[0],
+      source: "linkedin",
+      notes: "public LinkedIn company page employee card"
+    });
+  }
+  return { name, industry, size, hq, website, specialties, employeeCount, employees };
+}
 function extractNamedPeople(markdown) {
   const out = [];
   const seen = /* @__PURE__ */ new Set();
@@ -7895,6 +7951,76 @@ async function findEmployees(db, cfg, targets, opts) {
   }
   return merged;
 }
+function linkedinSlug(input) {
+  return input.replace(/^https?:\/\/(?:www\.)?linkedin\.com\/company\//i, "").replace(/^https?:\/\/(?:www\.)?linkedin\.com\//i, "").replace(/\/.*$/, "").trim();
+}
+async function linkedinCompany(db, cfg, slug, opts = {}) {
+  requireSpiderKey(cfg);
+  const clean = linkedinSlug(slug);
+  if (!clean) throw new Error("invalid LinkedIn company slug: " + slug);
+  const url = `https://www.linkedin.com/company/${encodeURIComponent(clean)}`;
+  const result = {
+    company: null,
+    industry: null,
+    size: null,
+    hq: null,
+    employeeCount: null,
+    specialties: [],
+    website: null,
+    employeesFound: 0,
+    peopleStored: 0,
+    domain: null,
+    guessesMade: 0,
+    emailsFound: 0,
+    emails: [],
+    errors: []
+  };
+  log.step("LinkedIn company page: " + url);
+  const page = await scrapePage(cfg, url, {
+    mode: opts.mode ?? "browser",
+    params: { premiumProxy: true, waitForSelector: ".org-top-card-summary" }
+  });
+  const info = extractLinkedinCompany(page.markdown);
+  result.company = info.name;
+  result.industry = info.industry;
+  result.size = info.size;
+  result.hq = info.hq;
+  result.employeeCount = info.employeeCount;
+  result.specialties = info.specialties;
+  result.website = info.website;
+  result.employeesFound = info.employees.length;
+  log.info(`LinkedIn: ${info.name ?? clean} \xB7 ${info.industry ?? "?"} \xB7 ${info.size ?? "?"}` + (info.employeeCount ? ` \xB7 ${info.employeeCount} employees` : "") + ` \xB7 ${info.employees.length} exposed employee card(s)`);
+  if (info.employees.length === 0) {
+    log.warn("No employee cards exposed on the public page (the roster section is login-gated).");
+    return result;
+  }
+  if (!info.website) {
+    log.warn("No website on the LinkedIn page \u2014 cannot map employees to an email domain.");
+  }
+  const companyName = info.name ?? clean;
+  const domain = info.website ? domainOf(info.website) : null;
+  result.domain = domain;
+  if (domain) {
+    const { newPeople } = await storePersons(db, domain, info.employees, companyName);
+    result.peopleStored = newPeople;
+    log.info(`Stored ${newPeople} employee(s) at ${domain}`);
+    const res = await enrichDomain(db, cfg, domain, {
+      people: info.employees,
+      verify: opts.verify !== false,
+      perPerson: opts.perPerson ?? 4,
+      meta: { company: companyName, category: info.industry ?? void 0 }
+    });
+    result.guessesMade = res.candidatesVerified;
+    result.emailsFound = res.emailsFound;
+    result.emails = res.emails ?? [];
+    result.errors.push(...res.errors);
+    log.ok(`Employee email inference: ${res.emailsFound} found (${res.candidatesVerified} verified, ${res.invalid} invalid).`);
+  } else {
+    const { newPeople } = await storePersons(db, clean, info.employees, companyName);
+    result.peopleStored = newPeople;
+  }
+  return result;
+}
 
 // spider-leads/src/tools.ts
 function def(t) {
@@ -8289,6 +8415,38 @@ function buildTools(cfg, db, opts = {}) {
           format: args.format ? String(args.format) : "markdown"
         });
         return JSON.stringify({ url: page.url, status: page.status, content_preview: preview(page.markdown, 2e3) });
+      }
+    },
+    linkedin_employees: {
+      name: "linkedin_employees",
+      description: "Discover employees from a company's PUBLIC LinkedIn page: scrapes the company page (browser + premium proxy), extracts the employee cards LinkedIn exposes (name + profile URL), stores them as people, then infers + verifies their emails against the company's website domain using the learned email pattern (Plunk-verified when key set).",
+      parameters: {
+        type: "object",
+        properties: {
+          slug: { type: "string", description: "LinkedIn company slug, e.g. sasktel" },
+          per_person: { type: "integer", description: "Max candidates per employee (default 4)" }
+        },
+        required: ["slug"]
+      },
+      async run(args) {
+        const res = await linkedinCompany(db, cfg, String(args.slug ?? ""), {
+          verify: !!cfg.plunkApiKey,
+          perPerson: Number(args.per_person) || 4
+        });
+        return JSON.stringify({
+          company: res.company,
+          industry: res.industry,
+          size: res.size,
+          hq: res.hq,
+          employeeCount: res.employeeCount,
+          website: res.website,
+          domain: res.domain,
+          employeesFound: res.employeesFound,
+          peopleStored: res.peopleStored,
+          emailsFound: res.emailsFound,
+          emails: res.emails.slice(0, 20),
+          errors: res.errors
+        });
       }
     },
     score_leads: {
@@ -9072,6 +9230,7 @@ export {
   extractEmails,
   extractGithubOrgs,
   extractGithubUsers,
+  extractLinkedinCompany,
   extractNamedPeople,
   fetchPathFromUrl,
   fetchStructured,
@@ -9088,6 +9247,7 @@ export {
   knownEmailsForDomain,
   leadsRelatedTo,
   learnPatterns,
+  linkedinCompany,
   linksUnlimited,
   listLeads,
   listPeople,

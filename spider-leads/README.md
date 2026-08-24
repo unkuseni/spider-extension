@@ -470,7 +470,23 @@ npm start -- employees acme.com globex.io --limit 10
 
 # Every extracted employee without an email becomes a guessing target
 npm start -- employees acme.com --ai-studio --guess --per-person 5
+
+# Employees from a company's PUBLIC LinkedIn page → people → inferred + verified emails
+# (browser + premium proxy; LinkedIn only exposes a few employee cards publicly —
+#  personal emails are never public, so this combines cards + pattern guessing)
+npm start -- linkedin sasktel --per-person 4
 ```
+
+### LinkedIn company pages
+
+`linkedin <company-slug>` scrapes the **public** LinkedIn company page (browser + premium
+proxy), extracts what LinkedIn exposes there — firmographics (industry, size, headquarters,
+employee count, specialties, website) and the employee cards in the "Employees at …" section
+(name + profile URL) — stores the employees as `people`, then runs employee-email inference
+against the company's website domain: the pattern is learned from known addresses and the
+employees' emails are guessed + verified with Plunk (when a key is configured). Personal
+emails are never public on LinkedIn — this is the sanctioned way to turn LinkedIn's public
+signals into candidates.
 
 ### Scraper catalog
 
@@ -605,6 +621,7 @@ Instead of the fixed pipeline, the model can **call tools** to decide what to do
 | `extract_contacts` | scrape contact pages → emails/names/titles (+ email type) |
 | `fetch_structured` | curated Fetch API — structured items from Zillow/Indeed/Yelp-class pages |
 | `extract_employees` | employee scraper for a domain (AI Studio prompt→JSON or standard pipeline) |
+| `linkedin_employees` | public LinkedIn company page → firmographics + employee cards → people → infer + verify emails |
 | `list_scrapers` | browse the curated scraper-config catalog (no keys needed) |
 | `find_employees` | discover named employees (name/title/LinkedIn/email) → people without emails |
 | `guess_emails` | infer + verify employee emails via the domain pattern, store valid ones |

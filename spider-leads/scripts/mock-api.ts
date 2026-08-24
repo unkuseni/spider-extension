@@ -64,6 +64,60 @@ function hostnameOf(url: string): string {
 function pageContent(url: string): string {
   const host = hostnameOf(url);
   const path = new URL(url).pathname.toLowerCase();
+  if (host.includes("linkedin.com") && path.startsWith("/company/")) {
+    // Public LinkedIn company page (mimics the real markdown shape).
+    const slug = path.split("/company/")[1]?.replace(/\/+$/, "") ?? "acme";
+    const company = slug === "sasktel" ? "SaskTel" : slug.charAt(0).toUpperCase() + slug.slice(1);
+    return `# ${company} | LinkedIn
+
+## Software
+
+Regina, Saskatchewan 35,010 followers
+
+[
+See jobs
+](https://www.linkedin.com/jobs/${slug}-jobs-worldwide)
+
+About us
+We build software for developers.
+
+Website
+[
+http://${slug === "sasktel" ? "www.sasktel.com" : slug + ".com"}
+](https://www.linkedin.com/redir/redirect?url=http%3A%2F%2Fwww.sasktel.com&urlhash=abc)
+
+External link for ${slug}
+Industry
+Software
+Company size
+1,001-5,000 employees
+Headquarters
+Regina, Saskatchewan
+Type
+Private
+Founded
+1908
+Specialties
+Software, Data, Cloud, and Internet
+
+##
+Employees at ${slug}
+
+* [![View profile]()
+###
+Sarah Chen
+](https://ca.linkedin.com/in/sarah-chen-123?trk=org-employees)
+
+* [![View profile]()
+###
+Dana Fox
+](https://ca.linkedin.com/in/dana-fox-456?trk=org-employees)
+
+##
+
+View 2k employees at ${slug}
+`;
+  }
   if (host.endsWith(".edu") || host.includes("university") || host.includes("college")) {
     return `# ${host}
 
@@ -209,8 +263,10 @@ export function createMockHandler(opts: MockOptions = {}) {
       const body = await readBody(req);
       const u = body.url ?? "https://example.com/";
       let content = pageContent(u);
-      // Echo proxy/geo params so tests can assert passthrough end-to-end.
-      if (body.premium_proxy || body.country_code) {
+      // Echo proxy/geo params so tests can assert passthrough end-to-end
+      // (skipped for LinkedIn company pages — their fixture is exact).
+      const isLinkedIn = String(body.url ?? "").includes("linkedin.com/company");
+      if ((body.premium_proxy || body.country_code) && !isLinkedIn) {
         content = `# proxy echo: premium_proxy=${String(body.premium_proxy)} country_code=${String(body.country_code)}\n\n` + content;
       }
       return json(res, 200, [{

@@ -3,9 +3,9 @@
 
 export {
   hunt, huntSearch, verifyStored, ensureDb, defaultRunOptions,
-  extractContactsFromSite, findEmployees, EMPLOYEE_AI_PROMPT,
+  extractContactsFromSite, findEmployees, linkedinCompany, EMPLOYEE_AI_PROMPT,
 } from "../spider-leads/src/pipeline.ts";
-export type { RunOptions, RunSummary, SiteExtraction } from "../spider-leads/src/pipeline.ts";
+export type { RunOptions, RunSummary, SiteExtraction, LinkedinCompanyResult } from "../spider-leads/src/pipeline.ts";
 
 export {
   openDb, initSchema, listLeads, dbStats, upsertLead, recordVerification, unverifiedEmails,
@@ -42,7 +42,7 @@ export { classifyEmailType, extractEmails, isValidEmail, domainOf, emailNameHint
 export { enrichDomain, storePersons } from "../spider-leads/src/enrich.ts";
 export type { EnrichOptions } from "../spider-leads/src/enrich.ts";
 export { candidatesForPerson, learnPatterns, rankPatterns, guessLabel } from "../spider-leads/src/guess.ts";
-export { extractNamedPeople, extractGithubOrgs, extractGithubUsers, splitName, patternOf, PATTERN_LABELS } from "../spider-leads/src/people.ts";
+export { extractNamedPeople, extractLinkedinCompany, extractGithubOrgs, extractGithubUsers, splitName, patternOf, PATTERN_LABELS } from "../spider-leads/src/people.ts";
 export { findGithubPeople } from "../spider-leads/src/github.ts";
 export { classifyTitle, scoreLead, icpMatch, gradeLabel } from "../spider-leads/src/leadscore.ts";
 export type { LeadClass, ScoreInput } from "../spider-leads/src/leadscore.ts";
