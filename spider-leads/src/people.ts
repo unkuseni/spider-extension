@@ -169,14 +169,18 @@ export function localPartFor(name: string, pattern: string): string | null {
     case "firstl": return f + li;
     case "f.lastname": return fi + "." + l;
     case "last.first": return dots(l + " " + f);
+    case "lastfirst": return l + f;
+    case "last": return l;
     case "first": return f;
     default: return null;
   }
 }
 
-/** All pattern labels we can generate (most common first). */
+/** All pattern labels we can generate (most common first). lastfirst + last are
+ *  common in mainland Europe / Nordics, where single-surname addresses and
+ *  lastname-firstname conventions are widespread. */
 export const PATTERN_LABELS = [
-  "first.last", "first_last", "firstlast", "f.last", "flast", "firstl", "last.first", "first",
+  "first.last", "first_last", "firstlast", "f.last", "flast", "firstl", "last.first", "lastfirst", "last", "first",
 ] as const;
 
 /** Detect which pattern a known address uses (for learning a domain's convention). */

@@ -448,6 +448,95 @@ body {
   line-height: 1.6;
 }
 
+/* ─── Leads tab: setup checklist ─── */
+.leads-setup {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+.leads-setup-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.leads-setup-items { display: flex; flex-direction: column; gap: 4px; }
+.setup-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 3px 0;
+}
+.setup-item .setup-check {
+  font-weight: 800;
+  width: 16px;
+  text-align: center;
+  flex: none;
+}
+.setup-item.ok .setup-check { color: var(--success); }
+.setup-item.missing .setup-check { color: var(--danger); }
+.setup-item .setup-label { color: var(--text); font-weight: 500; }
+.setup-item .setup-fix { margin-left: auto; padding: 2px 8px; font-size: 11px; }
+.leads-setup.done {
+  border-color: rgba(52, 211, 153, 0.35);
+}
+.leads-setup.done .leads-setup-title { color: var(--success); }
+
+/* ─── Leads tab: how-it-works guide ─── */
+.leads-guide {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.leads-guide-summary {
+  cursor: pointer;
+  padding: 8px 10px;
+  color: var(--text);
+  font-weight: 600;
+  user-select: none;
+}
+.leads-guide-summary:hover { background: var(--surface-hover); }
+.leads-guide-body {
+  padding: 0 10px 10px 10px;
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+.leads-guide-body b { color: var(--text); }
+.leads-steps { margin: 6px 0; padding-left: 18px; }
+.leads-steps li { margin-bottom: 4px; }
+
+/* ─── Leads tab: button groups + hints ─── */
+.btn-group-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  margin: 12px 0 6px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 3px;
+}
+.field-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  margin-top: 3px;
+}
+
+/* ─── Leads tab: run summary lines ─── */
+.leads-summary-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+}
+.leads-summary-line .k { color: var(--text-muted); }
+.leads-summary-line .v { color: var(--text); font-weight: 500; text-align: right; white-space: nowrap; }
+.leads-summary-meta { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); color: var(--text-muted); }
+
 .btn-outline {
   background: transparent;
   border: 1px solid var(--border);

@@ -444,6 +444,9 @@ async function main(): Promise<number> {
           log.raw(`│  candidates      : ${res.candidatesGenerated} (${res.candidatesVerified} verified)`);
           log.raw(`│  emails found    : ${res.emailsFound}`);
           log.raw(`│  invalid         : ${res.invalid}`);
+          if (res.catchAll === true) {
+            log.raw("│  catch-all       : YES — guessed addresses would all falsely 'verify', so none were stored");
+          }
           for (const e of (res.emails ?? []).slice(0, 15)) {
             const { grade } = scoreLead({
               emailValid: 1, emailScore: e.pattern === "published" ? null : e.score,
@@ -700,6 +703,9 @@ async function main(): Promise<number> {
             companyConfidence: r.confidence,
             icpMatch: icp,
             title: r.title,
+            isDisposable: r.is_disposable === 1,
+            hasMxRecords: r.has_mx_records === 1,
+            isPersonalEmail: r.is_personal_email === 1,
           });
           await updateLeadScore(db, r.email, {
             department: cls.department, seniority: cls.seniority,
@@ -754,6 +760,9 @@ async function main(): Promise<number> {
         } else {
           log.raw(`Total: ${s.totals.total}  |  valid: ${s.totals.valid ?? 0}  |  invalid: ${s.totals.invalid ?? 0}  |  unverified: ${s.totals.unverified ?? 0}`);
           log.raw(`People: ${s.people ?? 0}`);
+          if (s.domainsProbed) {
+            log.raw(`Domains probed for catch-all: ${s.domainsProbed.catch_all ?? 0} catch-all · ${s.domainsProbed.verified_clear ?? 0} clean`);
+          }
           log.raw("By status:");
           for (const r of s.byStatus) log.raw(`  ${r.status.padEnd(10)} ${r.n}`);
           log.raw("By category:");

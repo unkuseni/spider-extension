@@ -120,6 +120,14 @@ const SCHEMA = [
     leads_invalid INTEGER DEFAULT 0,
     errors TEXT
   )`,
+  `CREATE TABLE IF NOT EXISTS domain_meta (
+    domain TEXT PRIMARY KEY,
+    is_catchall INTEGER,
+    catchall_checked_at TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at TEXT
+  )`,
 ];
 
 export async function initSchema(db: Client): Promise<void> {
@@ -267,9 +275,11 @@ export interface LeadRow {
   person_name: string | null;
   title: string | null;
   phone: string | null;
+  linkedin: string | null;
   company: string | null;
   domain: string | null;
   category: string | null;
+  subcategory: string | null;
   tier: string | null;
   confidence: number | null;
   email_type: string | null;
@@ -287,6 +297,10 @@ export interface LeadRow {
   source: string;
   status: string;
   email_valid: number | null;
+  /** Plunk deliverability signals — feed the rescore path. */
+  is_disposable: number | null;
+  has_mx_records: number | null;
+  is_personal_email: number | null;
   verified_at: string | null;
   created_at: string;
 }
@@ -297,8 +311,7 @@ export async function listLeads(
     category?: string; status?: string; emailType?: string; emailSource?: string; interest?: string;
     department?: string; tier?: string; minScore?: number; decisionMaker?: boolean; limit?: number; offset?: number;
   } = {}
-): Promise<LeadRow[]> {
-  const where: string[] = [];
+): Promise<LeadRow[]> {  const where: string[] = [];
   const args: (string | number)[] = [];
   if (opts.category) {
     where.push("category = ?");
@@ -335,10 +348,11 @@ export async function listLeads(
     where.push("interests LIKE ?");
     args.push("%" + opts.interest + "%");
   }
-  const sql = `SELECT id, email, person_name, title, phone, company, domain, category, tier,
+  const sql = `SELECT id, email, person_name, title, phone, linkedin, company, domain, category, subcategory, tier,
             confidence, email_type, email_source, email_pattern, email_score,
             department, seniority, decision_maker, lead_score, lead_tier, icp_match,
-            interests, source_url, source, status, email_valid, verified_at, created_at
+            interests, source_url, source, status, email_valid, is_disposable, has_mx_records,
+            is_personal_email, verified_at, created_at
      FROM leads ${where.length ? "WHERE " + where.join(" AND ") : ""}
      ORDER BY lead_score DESC, created_at DESC LIMIT ? OFFSET ?`;
   args.push(opts.limit ?? 50, opts.offset ?? 0);
@@ -354,6 +368,20 @@ export async function unverifiedEmails(db: Client, opts: { limit?: number; statu
     args: [status, opts.limit ?? 1000],
   });
   return (res.rows as unknown as { email: string }[]).map((r) => r.email);
+}
+
+/** One lead row by email (used to re-score a lead right after verification). */
+export async function leadRowByEmail(db: Client, email: string): Promise<LeadRow | null> {
+  const res = await db.execute({
+    sql: `SELECT id, email, person_name, title, phone, linkedin, company, domain, category, subcategory, tier,
+            confidence, email_type, email_source, email_pattern, email_score,
+            department, seniority, decision_maker, lead_score, lead_tier, icp_match,
+            interests, source_url, source, status, email_valid, is_disposable, has_mx_records,
+            is_personal_email, verified_at, created_at
+     FROM leads WHERE email = ? LIMIT 1`,
+    args: [email.toLowerCase()],
+  });
+  return (res.rows as unknown as LeadRow[])[0] ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -645,6 +673,10 @@ export async function dbStats(db: Client): Promise<any> {
      FROM leads`
   );
   const peopleCount = await db.execute(`SELECT COUNT(*) AS people FROM people`);
+  const catchAllRow = await db.execute(
+    `SELECT COUNT(*) AS catch_all, SUM(CASE WHEN is_catchall = 0 THEN 1 ELSE 0 END) AS verified_clear
+     FROM domain_meta WHERE is_catchall IS NOT NULL`
+  );
   const bySource = await db.execute(
     `SELECT COALESCE(email_source, 'unknown') AS email_source, COUNT(*) AS n
      FROM leads WHERE email IS NOT NULL GROUP BY email_source ORDER BY n DESC`
@@ -677,6 +709,8 @@ export async function dbStats(db: Client): Promise<any> {
     topInterests,
     totals: (totals.rows as unknown as any[])[0],
     people: (peopleCount.rows as unknown as { people: number }[])[0]?.people ?? 0,
+    /** Domains probed for catch-all behavior: (catchAll, clear) split. */
+    domainsProbed: (catchAllRow.rows as unknown as { catch_all: number; verified_clear: number }[])[0] ?? null,
   };
 }
 
@@ -692,5 +726,50 @@ export async function recordRun(
       run.pagesCrawled, run.leadsFound, run.verified, run.invalid,
       run.errors.length ? JSON.stringify(run.errors) : null,
     ],
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Domain metadata — catch-all detection results, persisted so we probe once
+// per domain instead of on every enrichment run.
+// ---------------------------------------------------------------------------
+
+export interface DomainMetaRow {
+  domain: string;
+  is_catchall: number | null;
+  catchall_checked_at: string | null;
+  notes: string | null;
+}
+
+/** Cached domain flags (is_catchall …). */
+export async function getDomainMeta(db: Client, domain: string): Promise<DomainMetaRow | null> {
+  try {
+    const res = await db.execute({
+      sql: "SELECT domain, is_catchall, catchall_checked_at, notes FROM domain_meta WHERE domain = ?",
+      args: [domain],
+    });
+    return (res.rows as unknown as DomainMetaRow[])[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist a catch-all probe result for a domain. */
+export async function setDomainCatchAll(
+  db: Client,
+  domain: string,
+  isCatchAll: boolean,
+  notes?: string
+): Promise<void> {
+  const now = new Date().toISOString();
+  await db.execute({
+    sql: `INSERT INTO domain_meta (domain, is_catchall, catchall_checked_at, notes, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(domain) DO UPDATE SET
+       is_catchall = excluded.is_catchall,
+       catchall_checked_at = excluded.catchall_checked_at,
+       notes = COALESCE(excluded.notes, domain_meta.notes),
+       updated_at = excluded.updated_at`,
+    args: [domain, isCatchAll ? 1 : 0, now, notes ?? null, now],
   });
 }

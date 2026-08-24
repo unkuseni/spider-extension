@@ -23,23 +23,38 @@ Scrape any page, crawl entire sites, search the web — powered by [Spider Cloud
   even with no published email) are extracted from team/leadership/contact pages and stored
   in a `people` table. When **"Infer employee emails"** is ticked (or you hit the 🔮
   **Enrich emails** button), the pipeline learns the domain's address convention from
-  already-known valid emails, generates candidate addresses per person (first.last,
-  firstlast, … — capped, default 3), and verifies them with Plunk before storing. Valid
-  ones become leads with a **🔮 Guessed** **Source** badge. The shared pipeline also pulls
-  GitHub org members (CLI `--github`) and stores any public GitHub email directly. See
+  already-known valid emails, generates candidate addresses per person (10 patterns:
+  first.last, first_last, firstlast, f.last, flast, firstl, last.first, **lastfirst,
+  last**, first — the last two cover mainland-Europe/Nordic conventions; capped, default
+  3), and verifies them with Plunk before storing. Valid ones become leads with a
+  **🔮 Guessed** **Source** badge. The shared pipeline also pulls GitHub org members
+  (CLI `--github`) and stores any public GitHub email directly. See
   [spider-leads](spider-leads/README.md#employee-email-discovery-inferred-emails).
+- **Verification you can trust** — emails are checked with Plunk **before** they become
+  leads, and the pipeline is defensive in both directions:
+  - **Catch-all domains are auto-detected**: a clearly-bogus address is probed at each
+    domain (once — cached in `domain_meta`); if the domain accepts it, guessed emails
+    there are NOT trusted, because every invented address would falsely "verify".
+    This kills the #1 source of false-positive inferred emails.
+  - **Disposable mailboxes** (mailinator, yopmail, ~40 throwaway providers) are filtered
+    out before they reach Plunk — they never become leads.
+  - Verified leads are **immediately re-scored** with the verified truth: invalid or
+    disposable → score 0 / grade D, no-MX or non-existent domains drop hard (×0.4),
+    personal mailboxes lose a little (×0.9).
 - **Lead scoring + relationships** — every lead is classified from its title into a
   department (engineering, sales, marketing, product, operations, finance, HR, legal),
   a seniority (exec / head / director / manager / IC / unknown), and a **decision-maker**
   flag, then given a composite **score 0–100 + grade A–D** (`A` Hot ≥80, `B` Warm ≥65,
-  `C` Cool ≥45, `D` Cold), weighted by email veracity → seniority → company tier → ICP fit.
-  Optional **ICP rules** (Options → Lead Finder: **ICP interests / ICP categories**,
-  comma-separated) add a +12 / −10 ICP adjustment; empty means scoring without it. During
-  AI categorization the model also extracts **company relationships** (partner, client,
-  supplier, competitor, investor…) from the site's own text into a `company_relations`
-  table. The CLI's `score` recomputes grades, `relations [domain…]` prints them, and
-  `list --related-to <domain>` finds leads at related companies. See
-  [spider-leads](spider-leads/README.md#lead-scoring--relationships).
+  `C` Cool ≥45, `D` Cold), weighted by email veracity → Plunk deliverability signals
+  (disposable/MX/domain-exists — see *Verification you can trust*) → seniority →
+  company tier → ICP fit. Optional **ICP rules** (Options → Lead Finder:
+  **ICP interests / ICP categories** — with one-click presets like 🤖 AI/SaaS, 💸 Fintech,
+  🛒 E-commerce, 🧑🎨 Agencies) add a +12 / −10 ICP adjustment; empty means scoring
+  without it. During AI categorization the model also extracts **company
+  relationships** (partner, client, supplier, competitor, investor…) from the site's own
+  text into a `company_relations` table. The CLI's `score` recomputes grades,
+  `relations [domain…]` prints them, and `list --related-to <domain>` finds leads at
+  related companies. See [spider-leads](spider-leads/README.md#lead-scoring--relationships).
 - **AI Agent (Leads tab)** — type an objective ("find fintech companies interested in AI and
   verify their emails") and the model drives the whole workflow itself via tool calling:
   `search_web`, `extract_contacts`, `find_employees`, `guess_emails`, `categorize_company`,
@@ -57,6 +72,12 @@ Scrape any page, crawl entire sites, search the web — powered by [Spider Cloud
   credits apply) and falls back to the standard extractor otherwise. The **📚 Scrapers**
   button browses Spider's curated scraper-config catalog (Zillow/Indeed/Yelp…) — no key
   needed.
+- **Discovery depth for outreach** — contact-page detection reaches more sites
+  (multilingual: `/equipe`, `/kontakt`, `/impressum`, `/equipo`… plus `/get-in-touch`,
+  `/press`, `/sales`, investor-relations), social channels are captured alongside LinkedIn
+  (Twitter/X URLs + @handles, Facebook pages) and **scheduling links** (Calendly, Cal.com,
+  HubSpot meetings, SavvyCal…) — a published "book a meeting" link is a strong signal the
+  person is open to cold outreach.
 - **Full Spider Cloud API coverage** — every documented endpoint is wired: `/scrape`,
   `/crawl`, `/search`, `/links`, `/screenshot` (full-page PNG/JPEG/WebP), `/transform`
   (HTML→markdown), `/unblocker` (bot-protection bypass), `/unlimited/*`, `/fetch`
@@ -176,6 +197,10 @@ Then reload the extension. Re-run `build:vendor` whenever you change
 - **Keys are stored in plaintext** in the browser's extension storage (synced via your
   browser account where supported). Anyone with device access could read them — treat
   them like passwords. The extension never sends them anywhere except their own provider.
+- **Catch-all domains are detected, not assumed**: before guessing emails at a domain, the
+  pipeline verifies a clearly-bogus probe address; if the domain accepts it, guessed
+  addresses are not stored (they'd all falsely "verify"). The result is cached in
+  `domain_meta`, so it costs one probe per domain total.
 - Your **resume text is sent to your configured AI provider** when you build a profile
   (Career tab) — it goes nowhere else. Pick a provider you trust.
 - The DOCX resume parser reads `word/document.xml` (main body); headers/footers and encrypted

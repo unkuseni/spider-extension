@@ -85,9 +85,11 @@ each email with Plunk.
 │   │   ├── tools.ts           The tools the agent can call
 │   │   ├── spider.ts          Spider Cloud API client
 │   │   ├── ai.ts              AI calls: categorization, interests, chat-with-tools
-│   │   ├── extract.ts         Regex extraction + email-type classifier + URL filters
-│   │   ├── plunk.ts           Plunk /v1/verify client
-│   │   ├── db.ts              Turso schema, upserts, queries, stats
+│   │   ├── extract.ts         Regex extraction (emails/phones/LinkedIn/Twitter/scheduler links)
+│   │   │                      + email-type classifier + multilingual URL filters + disposable-domain set
+│   │   ├── plunk.ts           Plunk /v1/verify client + catch-all domain probe
+│   │   ├── leadscore.ts       Role classification + composite lead score (veracity/deliverability/seniority/tier/ICP)
+│   │   ├── db.ts              Turso schema, upserts, queries, stats, domain_meta (catch-all cache)
 │   │   ├── config.ts / types.ts / log.ts
 │   ├── scripts/mock-api.ts    Local fake of Spider + Plunk + OpenAI (testing without keys!)
 │   └── README.md / .env.example
@@ -141,11 +143,28 @@ Named people found on team/leadership/contact pages (name, title, LinkedIn, GitH
 or without an email) are kept in a separate **`people`** table (dedup by `domain+name`).
 For people with no published address, the `enrich` command (or `hunt --guess`) **infers**
 one: it learns the domain's convention from already-known valid emails (`first.last`,
-`firstlast`, …), generates a few candidates per person, and verifies them with Plunk
-**before storing** — so valid ones are saved as leads with `email_source='guessed'`,
-`email_pattern`, and `email_score`. Invalid candidates are recorded in `email_candidates`
-so they're never re-guessed. GitHub org members (opt-in via `--github` + `GITHUB_TOKEN`)
-are pulled the same way; their public emails become `email_source='github'` leads.
+`firstlast`, `lastfirst`, `last`, … — 10 patterns total), generates a few candidates per
+person, and verifies them with Plunk **before storing** — so valid ones are saved as leads
+with `email_source='guessed'`, `email_pattern`, and `email_score`. Invalid candidates are
+recorded in `email_candidates` so they're never re-guessed. GitHub org members (opt-in via
+`--github` + `GITHUB_TOKEN`) are pulled the same way; their public emails become
+`email_source='github'` leads.
+
+**Catch-all guard (never guess into a black hole):** a catch-all domain accepts ANY
+address, so every guessed address there would falsely "verify" — the #1 source of
+false-positive inferred emails. Before verifying guesses at a domain, `plunk.ts` probes a
+clearly-bogus address (`zz-catchall-probe-…@domain`); if it verifies, the domain is marked
+catch-all in the `domain_meta` table (probed once), verification is skipped, and
+candidates are saved as `pending` with a note — no garbage leads are stored. `enrich`
+results carry `catchAll: true` so callers can surface it.
+
+**Verification signals shape scores:** `scoreLead` accepts `isDisposable`,
+`hasMxRecords`, `domainExists`, `isPersonalEmail` — disposable → score 0 / D; no-MX or
+non-existent domain → ×0.4; personal mailbox → ×0.9. `verifyEmails` (pipeline.ts) calls
+`rescoreAfterVerification` after each Plunk result, so a lead's score immediately reflects
+the verified truth (and `listLeads` orders by that score). Disposable mailboxes are also
+pre-filtered by `isValidEmail` (~40 provider domains) so they never reach Plunk.
+
 Heads-up: these are **guesses** — Plunk confirms deliverability, not correctness, so
 double-check before outreach.
 
@@ -316,7 +335,7 @@ you ──▶ "find fintech companies interested in AI and verify their emails"
 
 ## 10. The database (Turso)
 
-Four tables. The `leads` table columns:
+Six tables. The `leads` table columns:
 
 | Group | Columns |
 | --- | --- |
@@ -325,6 +344,7 @@ Four tables. The `leads` table columns:
 | Provenance | `source` (hunt/search/agent/guess/github), `source_url`, `raw_data` (JSON), `created_at`, `updated_at` |
 | Email origin | `email_source` (page/guessed/github/agent/user), `email_pattern`, `email_score` (how the address was obtained) |
 | Verification | `status` (new/verified/invalid/error), `email_valid`, `is_disposable`, `is_personal_email`, `has_mx_records`, `is_typo`, `plunk_reasons`, `verified_at` |
+| Scoring | `department`, `seniority`, `decision_maker`, `lead_score` (0-100), `lead_tier` (A-D), `icp_match` |
 
 `people` — named individuals (even with no published email), deduped per `domain+name`:
 `name`, `title`, `email`, `linkedin`, `github`, `domain`, `company`, `source`, `source_url`, `notes`.
@@ -333,6 +353,13 @@ This is the employee directory that pattern-based email inference works from.
 `email_candidates` — every inferred address and its verification outcome:
 `email` (PK), `person_name`, `domain`, `pattern`, `score`, `reason`, `status`
 (pending/valid/invalid/error), `detail`. Invalid candidates are never re-guessed.
+
+`company_relations` — company-to-company relationships found by the AI on the sites
+(Partner/Client/Supplier/Competitor/Subsidiary/Parent/Investor/Other), with
+`target_domain`, `evidence`, `confidence`, `source_url`.
+
+`domain_meta` — per-domain flags: `is_catchall`, `catchall_checked_at`, `notes`. The
+catch-all probe result is cached here so each domain is probed exactly once.
 
 `runs` — one row per execution: target, pages, leads found/verified/invalid, errors.
 
@@ -364,6 +391,21 @@ node src/index.ts agent "find companies and verify emails"
 
 Rules of thumb for development: if it works against the mock, the only things left to
 test with real keys are quotas, rate limits, and real-world anti-bot behavior.
+
+The mock is configurable for deterministic verification tests
+(`startMockApi(0, opts)` from `test/helpers/ctx.mjs`):
+
+- `verifyPattern` (+ `verifyHosts`) — only local-parts matching a pattern shape verify
+  as valid (e.g. `"first.last"` on `"acme.com"`), everything else comes back invalid.
+  Handles all 10 pattern labels used by `guess.ts`.
+- `catchAllHosts` — hostnames that accept **any** address (a catch-all mailbox):
+  catch-all probes and every guessed address there "verify". Use this to test the
+  catch-all guard in `enrichDomain` (see `test/catchall.test.mjs`).
+- Normal domains automatically reject the `zz-catchall-probe-…` local part, so the
+  catch-all probe returns "not catch-all" without extra configuration.
+
+Special hosts: `mailinator.com` / `tempmail.com` verify as disposable, `gmail.com` as a
+personal mailbox, `nonexistent.fake` as invalid (no MX records).
 
 ---
 

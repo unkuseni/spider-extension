@@ -14,6 +14,8 @@ export interface MockOptions {
   verifyPattern?: string;
   /** Hostnames the verifyPattern check applies to (empty/undefined = all hosts). */
   verifyHosts?: string[];
+  /** Hostnames that accept ANY address (catch-all mailboxes) — probes and guesses all "verify". */
+  catchAllHosts?: string[];
 }
 
 /** Regex describing the shape of a pattern's email local part (for deterministic verify tests). */
@@ -29,6 +31,8 @@ function patternShapeRe(pattern: string): RegExp | null {
     case "flast":
     case "firstl":
     case "first":
+    case "lastfirst":
+    case "last":
       return /^[a-z0-9]+$/;
     default:
       return null;
@@ -328,6 +332,15 @@ export function createMockHandler(opts: MockOptions = {}) {
             return json(res, 200, { success: true, data: { ...data, valid: false, hasMxRecords: true, reasons: ["Catch-all pattern rejected"] } });
           }
         }
+      }
+      // Catch-all simulation: configured hosts accept ANY address (probe + guesses).
+      if (opts.catchAllHosts?.includes(hostnameOf(domain))) {
+        return json(res, 200, { success: true, data: { ...data, reasons: ["Catch-all mailbox (mock)"] } });
+      }
+      // Normal domains reject the clearly-bogus probe local part — unless the
+      // host is a configured catch-all (handled above).
+      if (local.startsWith("zz-catchall-probe-")) {
+        return json(res, 200, { success: true, data: { ...data, valid: false, reasons: ["Probe address rejected — not a catch-all domain"] } });
       }
       return json(res, 200, { success: true, data });
     }

@@ -453,6 +453,50 @@ var BAD_DOMAINS = /* @__PURE__ */ new Set([
   "email.com",
   "mail.com"
 ]);
+var DISPOSABLE_DOMAINS = /* @__PURE__ */ new Set([
+  "mailinator.com",
+  "mailinator.net",
+  "guerrillamail.com",
+  "guerrillamailblock.com",
+  "sharklasers.com",
+  "spamgourmet.com",
+  "tempmail.com",
+  "temp-mail.org",
+  "tempmail.net",
+  "10minutemail.com",
+  "10minutemail.net",
+  "throwawaymail.com",
+  "trashmail.com",
+  "trashmail.net",
+  "trashmail.me",
+  "fakeinbox.com",
+  "getnada.com",
+  "mailnesia.com",
+  "yopmail.com",
+  "mintemail.com",
+  "dispostable.com",
+  "maildrop.cc",
+  "mohmal.com",
+  "moakt.com",
+  "tempinbox.com",
+  "spambog.com",
+  "tempr.email",
+  "templist.org",
+  "incognitomail.com",
+  "mailcatch.com",
+  "33mail.com",
+  "sharklasers.com",
+  "armyspy.com",
+  "cuvox.com",
+  "dayrep.com",
+  "gustr.com",
+  "jourrapide.com",
+  "rhyta.com",
+  "superrito.com"
+]);
+function isDisposableDomain(domain) {
+  return DISPOSABLE_DOMAINS.has(domain.toLowerCase().trim());
+}
 var IMAGE_EXT = /* @__PURE__ */ new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "css", "js", "map", "ico", "zip", "pdf", "woff", "woff2", "ttf", "eot"]);
 function isValidEmail(email) {
   const e = email.trim().toLowerCase();
@@ -466,6 +510,7 @@ function isValidEmail(email) {
   const tld = domain.slice(dot + 1).toLowerCase();
   if (IMAGE_EXT.has(tld)) return false;
   if (BAD_DOMAINS.has(domain)) return false;
+  if (isDisposableDomain(domain)) return false;
   if (/\d{2,}/.test(tld)) return false;
   return true;
 }
@@ -487,11 +532,56 @@ function extractPhones(text) {
   }
   return [...out];
 }
-var LINKEDIN_RE = /https?:\/\/(?:www\.)?linkedin\.com\/in\/[A-Za-z0-9_-]+/g;
+var LINKEDIN_RE = /https?:\/\/(?:[a-z]{2,3}\.)?linkedin\.com\/(?:in|company)\/[A-Za-z0-9_-]{2,100}/g;
 function extractLinkedin(text) {
   return [...new Set(text.match(LINKEDIN_RE) ?? [])];
 }
-var CONTACT_PATH_RE = /\/(?:contact|contacts|team|our-team|meet-the-team|about|about-us|aboutus|staff|people|leadership|leadership-team|founders?|founder-team|board|board-of-directors|management|executive|executives|management-team|careers?|jobs?|directory|employees|who-we-are|impressum|imprint|kontakt|uber-uns)\b/i;
+var TWITTER_RE = /https?:\/\/(?:www\.|m\.)?(?:twitter|x)\.com\/[A-Za-z0-9_]{1,20}/g;
+function extractTwitter(text) {
+  const out = /* @__PURE__ */ new Set();
+  for (const m of text.matchAll(TWITTER_RE)) {
+    const url = m[0];
+    const handle = url.split("/").pop() ?? "";
+    if (/^(status|home|search|share|explore|settings|notifications|messages|i|tos|privacy)$/i.test(handle)) continue;
+    out.add(url);
+  }
+  for (const m of text.matchAll(/(?:^|\s)@([A-Za-z0-9_]{3,20})(?=\s|$)/g)) {
+    const h = m[1];
+    if (/^\d+$/.test(h)) continue;
+    if (/^(status|home|search|share|explore)$/i.test(h)) continue;
+    out.add("https://twitter.com/" + h);
+  }
+  return [...out];
+}
+var FACEBOOK_RE = /https?:\/\/(?:www\.|m\.|web\.)?facebook\.com\/(?:pg\/)?[A-Za-z0-9._-]{3,80}/g;
+function extractFacebook(text) {
+  const out = /* @__PURE__ */ new Set();
+  for (const m of text.matchAll(FACEBOOK_RE)) {
+    const url = m[0];
+    const slug = url.replace(/^https?:\/\/(?:www\.|m\.|web\.)?facebook\.com\/(?:pg\/)?/i, "").replace(/[.,;:!?)]+$/, "");
+    if (/^(sharer|sharer\.php|dialog|tr|login|login\.php|recover|help|policies|settings|events|marketplace|groups|watch|gaming|business)$/i.test(slug)) continue;
+    out.add(url.replace(/[.,;:!?)]+$/, ""));
+  }
+  return [...out];
+}
+var SCHEDULER_BASE_RE = /https?:\/\/(?:[a-z0-9-]+\.)?(?:calendly\.com|cal\.com|hubspot\.com\/meetings|savvycal\.com|tidycal\.com|acuityscheduling\.com|chilipiper\.com)\/[A-Za-z0-9._/?=&%-]+/gi;
+function extractSchedulerLinks(text) {
+  const hits = text.match(SCHEDULER_BASE_RE) ?? [];
+  const out = /* @__PURE__ */ new Set();
+  for (const h of hits) {
+    out.add(h.replace(/[.,;:!?)]$/, "").replace(/[?#].*$/, ""));
+  }
+  return [...out];
+}
+function extractSocial(text) {
+  return {
+    linkedin: extractLinkedin(text),
+    twitter: extractTwitter(text),
+    facebook: extractFacebook(text),
+    scheduler: extractSchedulerLinks(text)
+  };
+}
+var CONTACT_PATH_RE = /\/(?:contact|contacts|contact-us|contactus|reach-us|reach-us|get-in-touch|getintouch|speak|talk|talk-to-us|hello|say-hello|connect|enquire|enquiries|inquiries|team|our-team|meet-the-team|the-team|our-people|our-staff|staff|people|leadership|leadership-team|leaders|founders?|founder-team|co-founders?|board|board-of-directors|bod|management|executive|executives|management-team|leadership-board|careers?|jobs?|careers?\/team|directory|employees|who-we-are|whoweare|about|about-us|aboutus|about-the-team|company|company\/team|press|media|media-contact|press-contact|investors?|investor-relations|ir|sales|sales-team|support|support-team|impressum|imprint|kontakt|uber-uns|ueber-uns|equipe|l-equipe|lequipe|notre-equipe|equipe|equipo|nosotros|sobre-nosotros|chi-siamo|il-team|a-empresa|nossa-equipe)\b/i;
 function isContactUrl(url) {
   try {
     const path = new URL(url).pathname;
@@ -762,6 +852,10 @@ function localPartFor(name, pattern) {
       return fi + "." + l;
     case "last.first":
       return dots(l + " " + f);
+    case "lastfirst":
+      return l + f;
+    case "last":
+      return l;
     case "first":
       return f;
     default:
@@ -776,6 +870,8 @@ var PATTERN_LABELS = [
   "flast",
   "firstl",
   "last.first",
+  "lastfirst",
+  "last",
   "first"
 ];
 function patternOf(email, name) {
@@ -1135,6 +1231,7 @@ function parseContactsLocal(pages) {
     const emails = extractEmails(page.markdown);
     const phones = extractPhones(page.markdown);
     const linkedin = extractLinkedin(page.markdown);
+    const social = extractSocial(page.markdown);
     for (const email of emails) {
       const key = email;
       if (seen.has(key)) continue;
@@ -1143,6 +1240,8 @@ function parseContactsLocal(pages) {
         email,
         person_name: emailNameHint(email) ?? void 0,
         linkedin: linkedin[0],
+        twitter: social.twitter[0],
+        scheduler: social.scheduler[0],
         phone: phones[0]
       });
     }
@@ -1162,6 +1261,8 @@ function parseContactsLocal(pages) {
         person_name: person.name,
         title: person.title,
         linkedin: person.linkedin,
+        twitter: social.twitter[0],
+        scheduler: social.scheduler[0],
         github: void 0
       });
     }
@@ -1183,7 +1284,7 @@ async function parseContacts(cfg, pages, company) {
     try {
       const snippet = chunk.map((p) => `URL: ${p.url}
 ${p.markdown.slice(0, 6e3)}`).join("\n\n----\n\n").slice(0, CHUNK_CHARS);
-      const system = 'You extract business contact information from website pages for B2B lead generation. Return ONLY a JSON object: {"contacts": [{"email": "\u2026", "person_name": "\u2026", "title": "\u2026", "phone": "\u2026", "linkedin": "\u2026"}]}. Include only real contact records that appear in the text. Include team members even when no email is published (set email to null \u2014 the name, title and LinkedIn are what matter). Email must look like a real address (reject image filenames, placeholder domains, @example.com etc.). Use null for unknown fields.';
+      const system = `You extract business contact information from website pages for B2B lead generation. Return ONLY a JSON object: {"contacts": [{"email": "\u2026", "person_name": "\u2026", "title": "\u2026", "phone": "\u2026", "linkedin": "\u2026", "twitter": "\u2026", "scheduler": "\u2026"}]}. Include only real contact records that appear in the text. Include team members even when no email is published (set email to null \u2014 the name, title and LinkedIn are what matter). twitter = the person's Twitter/X profile URL if visible; scheduler = any scheduling/booking link on the page (Calendly, Cal.com, HubSpot meetings, SavvyCal\u2026). Email must look like a real address (reject image filenames, placeholder domains, @example.com etc.). Use null for unknown fields.`;
       const user = `Company: ${company}
 
 Pages:
@@ -1198,6 +1299,8 @@ ${snippet}`;
           title: typeof c2.title === "string" ? c2.title : void 0,
           phone: typeof c2.phone === "string" ? c2.phone : void 0,
           linkedin: typeof c2.linkedin === "string" ? c2.linkedin : void 0,
+          twitter: typeof c2.twitter === "string" ? c2.twitter : void 0,
+          scheduler: typeof c2.scheduler === "string" ? c2.scheduler : void 0,
           github: typeof c2.github === "string" ? c2.github : void 0
         };
         const key = rec.email ?? `p:${rec.phone ?? rec.person_name ?? Math.random()}`;
@@ -1297,6 +1400,9 @@ function tierWeight(tier) {
   return 0.72;
 }
 function scoreLead(input) {
+  if (input.isDisposable === true) {
+    return { score: 0, grade: "D" };
+  }
   let emailFactor;
   if (input.emailValid === 0) {
     return { score: 0, grade: "D" };
@@ -1313,7 +1419,10 @@ function scoreLead(input) {
   const sr = seniorityWeight(cls.seniority);
   const tw = tierWeight(input.companyTier);
   const conf = Math.min(1, Math.max(0, input.companyConfidence ?? 0.5));
-  let score = 100 * emailFactor * (0.55 + 0.45 * sr) * (0.7 + 0.3 * tw) * (0.92 + 0.08 * conf);
+  let deliverability = 1;
+  if (input.hasMxRecords === false || input.domainExists === false) deliverability = 0.4;
+  else if (input.isPersonalEmail === true) deliverability = 0.9;
+  let score = 100 * emailFactor * deliverability * (0.55 + 0.45 * sr) * (0.7 + 0.3 * tw) * (0.92 + 0.08 * conf);
   if (input.icpMatch === true) score += 12;
   else if (input.icpMatch === false) score -= 10;
   score = Math.round(Math.min(100, Math.max(0, score)));
@@ -1346,6 +1455,23 @@ function icpMatch(category, interests, icpCategories, icpInterests) {
 
 // spider-leads/src/plunk.ts
 var sleep2 = (ms) => new Promise((r) => setTimeout(r, ms));
+async function probeCatchAll(cfg, domain) {
+  if (!cfg.plunkApiKey) return null;
+  const clean = domain.toLowerCase().replace(/^www\./, "");
+  const probeLocal = "zz-catchall-probe-" + Math.random().toString(36).slice(2, 10);
+  const probeEmail = probeLocal + "@" + clean;
+  try {
+    const res = await verifyEmail(cfg, probeEmail);
+    if (res.valid && !res.isDisposable) {
+      log.info(`Catch-all domain detected: ${clean} accepts bogus address ${probeEmail}`);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    log.debug(`catch-all probe for ${clean} failed (${err.message}) \u2014 assuming unknown`);
+    return null;
+  }
+}
 async function verifyEmail(cfg, email) {
   if (!cfg.plunkApiKey) throw new Error("PLUNK_API_KEY is not set");
   const resp = await fetch(cfg.plunkApiBase.replace(/\/$/, "") + "/v1/verify", {
@@ -6188,6 +6314,14 @@ var SCHEMA = [
     leads_verified INTEGER DEFAULT 0,
     leads_invalid INTEGER DEFAULT 0,
     errors TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS domain_meta (
+    domain TEXT PRIMARY KEY,
+    is_catchall INTEGER,
+    catchall_checked_at TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at TEXT
   )`
 ];
 async function initSchema(db) {
@@ -6367,10 +6501,11 @@ async function listLeads(db, opts = {}) {
     where.push("interests LIKE ?");
     args.push("%" + opts.interest + "%");
   }
-  const sql = `SELECT id, email, person_name, title, phone, company, domain, category, tier,
+  const sql = `SELECT id, email, person_name, title, phone, linkedin, company, domain, category, subcategory, tier,
             confidence, email_type, email_source, email_pattern, email_score,
             department, seniority, decision_maker, lead_score, lead_tier, icp_match,
-            interests, source_url, source, status, email_valid, verified_at, created_at
+            interests, source_url, source, status, email_valid, is_disposable, has_mx_records,
+            is_personal_email, verified_at, created_at
      FROM leads ${where.length ? "WHERE " + where.join(" AND ") : ""}
      ORDER BY lead_score DESC, created_at DESC LIMIT ? OFFSET ?`;
   args.push(opts.limit ?? 50, opts.offset ?? 0);
@@ -6385,6 +6520,18 @@ async function unverifiedEmails(db, opts = {}) {
     args: [status, opts.limit ?? 1e3]
   });
   return res.rows.map((r) => r.email);
+}
+async function leadRowByEmail(db, email) {
+  const res = await db.execute({
+    sql: `SELECT id, email, person_name, title, phone, linkedin, company, domain, category, subcategory, tier,
+            confidence, email_type, email_source, email_pattern, email_score,
+            department, seniority, decision_maker, lead_score, lead_tier, icp_match,
+            interests, source_url, source, status, email_valid, is_disposable, has_mx_records,
+            is_personal_email, verified_at, created_at
+     FROM leads WHERE email = ? LIMIT 1`,
+    args: [email.toLowerCase()]
+  });
+  return res.rows[0] ?? null;
 }
 async function upsertPerson(db, domain, person, company) {
   const name = (person.name ?? "").trim();
@@ -6618,6 +6765,10 @@ async function dbStats(db) {
      FROM leads`
   );
   const peopleCount = await db.execute(`SELECT COUNT(*) AS people FROM people`);
+  const catchAllRow = await db.execute(
+    `SELECT COUNT(*) AS catch_all, SUM(CASE WHEN is_catchall = 0 THEN 1 ELSE 0 END) AS verified_clear
+     FROM domain_meta WHERE is_catchall IS NOT NULL`
+  );
   const bySource = await db.execute(
     `SELECT COALESCE(email_source, 'unknown') AS email_source, COUNT(*) AS n
      FROM leads WHERE email IS NOT NULL GROUP BY email_source ORDER BY n DESC`
@@ -6647,7 +6798,9 @@ async function dbStats(db) {
     byGrade: byGrade.rows,
     topInterests,
     totals: totals.rows[0],
-    people: peopleCount.rows[0]?.people ?? 0
+    people: peopleCount.rows[0]?.people ?? 0,
+    /** Domains probed for catch-all behavior: (catchAll, clear) split. */
+    domainsProbed: catchAllRow.rows[0] ?? null
   };
 }
 async function recordRun(db, run) {
@@ -6668,6 +6821,30 @@ async function recordRun(db, run) {
     ]
   });
 }
+async function getDomainMeta(db, domain) {
+  try {
+    const res = await db.execute({
+      sql: "SELECT domain, is_catchall, catchall_checked_at, notes FROM domain_meta WHERE domain = ?",
+      args: [domain]
+    });
+    return res.rows[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+async function setDomainCatchAll(db, domain, isCatchAll, notes) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  await db.execute({
+    sql: `INSERT INTO domain_meta (domain, is_catchall, catchall_checked_at, notes, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(domain) DO UPDATE SET
+       is_catchall = excluded.is_catchall,
+       catchall_checked_at = excluded.catchall_checked_at,
+       notes = COALESCE(excluded.notes, domain_meta.notes),
+       updated_at = excluded.updated_at`,
+    args: [domain, isCatchAll ? 1 : 0, now, notes ?? null, now]
+  });
+}
 
 // spider-leads/src/guess.ts
 var LEARNED_PATTERN_BOOST = 0.35;
@@ -6679,7 +6856,11 @@ var PATTERN_PRIOR = {
   "first": 0.06,
   "first_last": 0.04,
   "firstl": 0.02,
-  "last.first": 0.02
+  "last.first": 0.02,
+  // lastfirst + last: lower prior globally, but common in mainland Europe/Nordics
+  // and worth trying — a verified hit learns the convention fast (boost × 0.35).
+  "lastfirst": 0.02,
+  "last": 0.02
 };
 function learnPatterns(persons) {
   const counts = {};
@@ -6925,6 +7106,29 @@ async function enrichDomain(db, cfg, domain, opts = {}) {
     return result;
   }
   if (opts.dryRun) return result;
+  let catchAll = null;
+  try {
+    const metaRow = await getDomainMeta(db, domain);
+    if (metaRow?.is_catchall != null) {
+      catchAll = metaRow.is_catchall === 1;
+    } else {
+      catchAll = await probeCatchAll(cfg, domain);
+      if (catchAll !== null) await setDomainCatchAll(db, domain, catchAll);
+    }
+  } catch (err) {
+    result.errors.push("catch-all probe: " + err.message);
+  }
+  result.catchAll = catchAll;
+  if (catchAll === true) {
+    for (const c2 of candidates) {
+      if (!opts.dryRun) {
+        await upsertCandidate(db, c2);
+        await markCandidate(db, c2.email, "pending", "catch-all domain \u2014 guessed addresses cannot be trusted");
+      }
+    }
+    progress(opts, domain + " is a catch-all domain: guessed addresses would all 'verify', so no leads were stored.");
+    return result;
+  }
   progress(opts, "Verifying " + candidates.length + " candidate email(s) with Plunk\u2026");
   const byEmail = new Map(candidates.map((c2) => [c2.email, c2]));
   const titleByName = new Map(noEmail.map((p) => [p.name.toLowerCase(), p.title]));
@@ -6955,7 +7159,11 @@ async function enrichDomain(db, cfg, domain, opts = {}) {
             companyTier: meta.tier,
             companyConfidence: meta.confidence,
             icpMatch: icp,
-            title: personTitle
+            title: personTitle,
+            isDisposable: res.isDisposable,
+            hasMxRecords: res.hasMxRecords,
+            domainExists: res.domainExists,
+            isPersonalEmail: res.isPersonalEmail
           });
           await upsertLead(db, {
             email,
@@ -7016,7 +7224,19 @@ async function storePublicEmail(db, cfg, domain, person, opts, result, meta) {
         log.debug("  \u2717 github " + email + " invalid \u2014 not stored");
         return;
       }
-      await upsertLead(db, lead);
+      if (res.isDisposable) {
+        result.invalid++;
+        log.debug("  \u2717 github " + email + " is a disposable mailbox \u2014 not stored");
+        return;
+      }
+      const lead2 = githubLead(email, person, domain, meta, cfg, {
+        emailValid: 1,
+        isDisposable: res.isDisposable,
+        hasMxRecords: res.hasMxRecords,
+        domainExists: res.domainExists,
+        isPersonalEmail: res.isPersonalEmail
+      });
+      await upsertLead(db, lead2);
       await recordVerification(db, email, res);
     } catch (err) {
       result.errors.push(email + ": " + err.message);
@@ -7033,18 +7253,22 @@ async function storePublicEmail(db, cfg, domain, person, opts, result, meta) {
   });
   result.emailsFound++;
 }
-function githubLead(email, person, domain, meta, cfg) {
+function githubLead(email, person, domain, meta, cfg, signals) {
   const interests = meta.interests ?? [];
   const cls = classifyTitle(person.title);
   const icp = icpMatch(meta.category, interests.map((i) => i.topic), cfg.icpCategories, cfg.icpInterests);
   const { score, grade } = scoreLead({
-    emailValid: null,
+    emailValid: signals?.emailValid ?? null,
     emailScore: null,
     emailSource: "github",
     companyTier: meta.tier,
     companyConfidence: meta.confidence,
     icpMatch: icp,
-    title: person.title
+    title: person.title,
+    isDisposable: signals?.isDisposable,
+    hasMxRecords: signals?.hasMxRecords,
+    domainExists: signals?.domainExists,
+    isPersonalEmail: signals?.isPersonalEmail
   });
   return {
     email,
@@ -7186,10 +7410,49 @@ function normalizeContacts(contacts, pages) {
       title: c2.title?.trim() || void 0,
       phone: phone || void 0,
       linkedin: c2.linkedin?.trim() || void 0,
-      github: c2.github?.trim() || void 0
+      github: c2.github?.trim() || void 0,
+      twitter: c2.twitter?.trim() || void 0,
+      scheduler: c2.scheduler?.trim() || void 0
     });
   }
   return out;
+}
+async function rescoreAfterVerification(db, cfg, email, res) {
+  try {
+    const row = await leadRowByEmail(db, email);
+    if (!row) return;
+    let topics = [];
+    try {
+      const parsed = JSON.parse(row.interests ?? "[]");
+      topics = Array.isArray(parsed) ? parsed.map((i) => typeof i === "string" ? i : i?.topic ?? "") : [];
+    } catch {
+    }
+    const cls = classifyTitle(row.title);
+    const icp = icpMatch(row.category, topics, cfg.icpCategories, cfg.icpInterests);
+    const { score, grade } = scoreLead({
+      emailValid: res.valid ? 1 : 0,
+      emailSource: row.email_source,
+      emailScore: row.email_score,
+      companyTier: row.tier,
+      companyConfidence: row.confidence,
+      icpMatch: icp,
+      title: row.title,
+      isDisposable: res.isDisposable,
+      hasMxRecords: res.hasMxRecords,
+      domainExists: res.domainExists,
+      isPersonalEmail: res.isPersonalEmail
+    });
+    await updateLeadScore(db, email, {
+      department: cls.department,
+      seniority: cls.seniority,
+      decisionMaker: cls.decisionMaker,
+      leadScore: score,
+      leadTier: grade,
+      icpMatch: icp
+    });
+  } catch (err) {
+    log.debug("rescore " + email + ": " + err.message);
+  }
 }
 async function verifyEmails(db, cfg, emails, opts = {}) {
   let verified = 0, invalid = 0, failed = 0, done = 0;
@@ -7209,6 +7472,7 @@ async function verifyEmails(db, cfg, emails, opts = {}) {
         log.warn(email + " \u2014 INVALID");
       }
       await recordVerification(db, email, res, err);
+      if (!err) await rescoreAfterVerification(db, cfg, email, res);
       opts.onStatus?.(done, total, verified, invalid);
     }
   });
@@ -7256,7 +7520,8 @@ async function storeAndVerify(db, cfg, domain, company, cat, contacts, pages, op
     github: c2.github,
     email: c2.email,
     source: "page",
-    sourceUrl: pages[0]?.url
+    sourceUrl: pages[0]?.url,
+    notes: [c2.twitter ? "twitter: " + c2.twitter : null, c2.scheduler ? "scheduler: " + c2.scheduler : null].filter(Boolean).join("\n") || void 0
   }));
   if (!opts.dryRun && persons.length > 0) {
     const { newPeople } = await storePersons(db, domain, persons, company);

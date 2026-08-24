@@ -18,8 +18,39 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadAiSettings();
   await loadLeadsSettings();
   await refreshInstalledPlugins();
+  await updateSetupProgress();
   bindEvents();
 });
+
+// ---------------------------------------------------------------------------
+// Setup progress — the "am I ready?" strip at the top of the page.
+// Mirrors the Leads panel's checklist: Spider key + AI key + Turso + Plunk.
+// ---------------------------------------------------------------------------
+
+async function updateSetupProgress() {
+  try {
+    const [apiKey, ai, leads] = await Promise.all([getApiKey(), getAiConfigs(), getLeadsSettings()]);
+    // The lead pipeline prefers the OpenAI slot (works for DeepSeek/Groq), then
+    // falls back to Ollama and Gemini — mirror buildLeadsConfig in lib/leads.js.
+    const hasAi = !!(ai.openai?.key || ai.ollama?.endpoint || ai.gemini?.key);
+    const items = [
+      { label: '🕷️ Spider Cloud', ok: !!apiKey },
+      { label: '🤖 AI key', ok: hasAi },
+      { label: '🗄️ Turso DB', ok: !!leads.tursoUrl },
+      { label: '✅ Plunk', ok: !!leads.plunkApiKey },
+    ];
+    const n = items.filter((i) => i.ok).length;
+    const pills = document.getElementById('setupProgressPills');
+    const title = document.getElementById('setupProgressTitle');
+    if (!pills || !title) return;
+    pills.innerHTML = items.map((i) =>
+      '<span class="setup-pill ' + (i.ok ? 'ok' : 'missing') + '">' + (i.ok ? '✓' : '✗') + ' ' + i.label + '</span>'
+    ).join('');
+    const ready = n === items.length;
+    title.textContent = ready ? '✅ Setup complete — you can hunt leads now' : 'Setup progress: ' + n + ' / ' + items.length;
+    document.getElementById('setupProgress').classList.toggle('done', ready);
+  } catch { /* never block the options page on this */ }
+}
 
 // ---------------------------------------------------------------------------
 // Spider Cloud Settings
@@ -52,6 +83,7 @@ async function saveSpiderSettings() {
     });
     status.textContent = '✓ Saved';
     status.className = 'status-msg success';
+    updateSetupProgress();
     setTimeout(() => { status.textContent = ''; }, 2000);
   } catch (err) {
     status.textContent = `✗ ${err.message}`;
@@ -111,6 +143,7 @@ async function saveAiSettings() {
     await setAiConfigs(updates);
     status.textContent = '✓ AI settings saved';
     status.className = 'status-msg success';
+    updateSetupProgress();
     setTimeout(() => { status.textContent = ''; }, 2000);
   } catch (err) {
     status.textContent = `✗ ${err.message}`;
@@ -155,6 +188,7 @@ async function saveLeadsSettings() {
     });
     status.textContent = '✓ Lead Finder settings saved';
     status.className = 'status-msg success';
+    updateSetupProgress();
     setTimeout(() => { status.textContent = ''; }, 2000);
   } catch (err) {
     status.textContent = '✗ ' + err.message;
@@ -369,6 +403,17 @@ function bindEvents() {
   document.getElementById('saveSpiderBtn').addEventListener('click', saveSpiderSettings);
   document.getElementById('saveAiBtn').addEventListener('click', saveAiSettings);
   document.getElementById('saveLeadsBtn').addEventListener('click', saveLeadsSettings);
+  document.querySelectorAll('.icp-preset').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.getElementById('icpInterests').value = btn.dataset.int || '';
+      document.getElementById('icpCategories').value = btn.dataset.cat || '';
+      const status = document.getElementById('leadsStatus');
+      if (status) {
+        status.textContent = '✓ Preset loaded — click "Save Lead Finder Settings" to apply';
+        status.className = 'status-msg success';
+      }
+    });
+  });
   document.getElementById('installPluginFileBtn').addEventListener('click', attachPluginFile);
   document.getElementById('installPluginPasteBtn').addEventListener('click', installPastedPlugin);
   document.getElementById('pluginFormatLink').addEventListener('click', (e) => {

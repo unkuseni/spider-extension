@@ -35,14 +35,22 @@ ever put it in a CRM.
    from for employee discovery.
 6. **Infer employee emails** (opt-in) — for people without a published email, `guess.ts`
    generates candidate addresses from their name using common patterns (first.last,
-   first_last, firstlast, f.last, flast, firstl, last.first, first), learns the
-   domain's convention from already-known valid emails to rank them, and verifies
-   candidates with Plunk. See "Employee email discovery" below.
+   first_last, firstlast, f.last, flast, firstl, last.first, lastfirst, last, first —
+   the last two cover mainland-Europe/Nordic conventions), learns the domain's
+   convention from already-known valid emails to rank them, and verifies candidates
+   with Plunk. Before trusting any guess, the domain is **catch-all probed**: a clearly
+   bogus address is verified, and a domain that accepts it gets no guessed leads at all
+   (they would all "verify" even though the person doesn't exist). See "Employee email
+   discovery" below.
 7. **Store** — every lead is upserted into Turso (deduped by email), alongside the raw
    record, category, email type, interests, and source URL.
 8. **Verify** — each new email is sent to Plunk's `POST /v1/verify` endpoint; results
-   (valid, disposable, personal, MX records, typo) are stored with the lead. Invalid
-   emails are marked `invalid` and can be filtered out of exports.
+   (valid, disposable, personal, MX records, typo) are stored with the lead. Disposable
+   mailboxes (mailinator, yopmail… ~40 providers) are filtered out **before** the API call
+   — they never become leads. Invalid emails are marked `invalid` and can be filtered out
+   of exports. Verified leads are **immediately re-scored** using the verified truth:
+   invalid/disposable collapse to D, no-MX / non-existent domains drop hard, and personal
+   mailboxes lose a little.
 9. **Grade & score** — every lead is classified from its title into a department
    (engineering, sales, marketing, product, operations, finance, HR, legal), a seniority
    (exec / head / director / manager / IC / unknown), and a **decision-maker** flag, then
@@ -216,7 +224,7 @@ npm start -- list --tier A --department sales
 
 ## Database
 
-Five tables are created by `init-db`:
+Six tables are created by `init-db`:
 
 - **leads** — one row per contact, deduped by normalized email. Columns include
   `person_name`, `title`, `phone`, `linkedin`, `company`, `domain`, `category`,
@@ -243,6 +251,9 @@ Five tables are created by `init-db`:
   Parent / Investor / Other), `target`, `target_domain`, `evidence`, `confidence`,
   `source_url`. Deduped by `from_domain + target + type`.
 - **runs** — one row per hunt/search execution (pages crawled, leads found/verified/invalid, errors).
+- **domain_meta** — per-domain flags, currently the catch-all probe result
+  (`is_catchall`, `catchall_checked_at`, `notes`), so the probe happens once per domain
+  and inferred-email runs are safe on repeat.
 
 `stats` includes a people count and an email-source breakdown (visible in `--json` output).
 
@@ -263,16 +274,24 @@ How it works, per domain:
    verified) and learns its convention (`first.last`, `first_last`, `firstlast`…). With no
    known emails it falls back to a generic frequency prior (first.last ≈ 65% of the world).
 3. **Generate** — for each person without an email, candidate addresses are built from
-   their name (first.last, first_last, firstlast, f.last, flast, firstl, last.first, first),
-   ranked by the learned pattern + generic prior, and capped per person.
-4. **Verify** — candidates are sent to Plunk `/v1/verify` (bounded concurrency). Valid ones
+   their name (first.last, first_last, firstlast, f.last, flast, firstl, last.first,
+   lastfirst, last, first), ranked by the learned pattern + generic prior, and capped per
+   person.
+4. **Catch-all guard** — the #1 false-positive killer for guessed emails. A "catch-all"
+   domain accepts ANY address, so every guessed address there would falsely "verify".
+   Before verifying candidates, `plunk.ts` probes the domain with a clearly-bogus address
+   (`zz-catchall-probe-…@domain`). If that absurd mailbox verifies, the domain is marked
+   catch-all in `domain_meta` (probed once), verification is skipped, and candidates are
+   saved as `pending` with a catch-all note — no garbage leads are stored.
+5. **Verify** — candidates are sent to Plunk `/v1/verify` (bounded concurrency). Valid ones
    are stored as leads (`email_source = 'guessed'`) and marked verified; invalid or errored
-   ones are recorded in `email_candidates` so they are never re-guessed.
-5. **GitHub org discovery (opt-in)** — `github.ts` pulls public org members via
+   ones are recorded in `email_candidates` so they are never re-guessed. Valid candidates
+   are scored with Plunk's deliverability signals (disposable/MX/domain-exists/personal).
+6. **GitHub org discovery (opt-in)** — `github.ts` pulls public org members via
    `api.github.com`. Public GitHub profile emails become leads with
-   `email_source = 'github'` (no guessing needed); unnamed/no-email members are added to
-   the `people` roster. Unauthenticated the API allows ~60 req/h; set `GITHUB_TOKEN` to
-   raise that to 5000/h.
+   `email_source = 'github'` (no guessing needed; verified unless `--no-verify`, disposable
+   ones skipped); unnamed/no-email members are added to the `people` roster.
+   Unauthenticated the API allows ~60 req/h; set `GITHUB_TOKEN` to raise that to 5000/h.
 
 ### `enrich` — infer + verify emails for domains already in the DB
 
@@ -362,7 +381,7 @@ so "Sales Engineer" is engineering while "Growth Marketing Manager" is marketing
 The composite score multiplies weighted factors, then applies an ICP adjustment:
 
 ```
-score = 100 × emailFactor × (0.55 + 0.45 × seniority) × (0.7 + 0.3 × tier) × (0.92 + 0.08 × confidence)
+score = 100 × emailFactor × deliverability × (0.55 + 0.45 × seniority) × (0.7 + 0.3 × tier) × (0.92 + 0.08 × confidence)
 score += 12   if ICP matches     score −= 10   if ICP does not match
 score = clamp(round(score), 0, 100)
 ```
@@ -370,6 +389,7 @@ score = clamp(round(score), 0, 100)
 | Factor | Weight |
 | --- | --- |
 | **Email veracity** (dominates) | verified published 1.0 · guessed `0.55 + 0.45×confidence` · GitHub public 0.95 · published not-yet-verified 0.75 |
+| **Deliverability signals** (Plunk) | disposable → **score 0 / D immediately** · no-MX or non-existent domain × 0.4 · personal mailbox × 0.9 |
 | **Seniority** | exec 1.0, head 0.92, director 0.86, manager 0.78, IC 0.66, unknown 0.6 |
 | **Company tier** | Enterprise 1.0, Mid-market 0.9, SMB 0.8, Unknown 0.72 |
 | **Categorization confidence** | `0.92 + 0.08×confidence` |

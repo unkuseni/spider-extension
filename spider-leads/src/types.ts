@@ -28,6 +28,10 @@ export interface ContactRecord {
   phone?: string;
   linkedin?: string;
   github?: string;
+  /** Twitter/X handle URL (first hit on the page). */
+  twitter?: string;
+  /** Scheduling/booking link (Calendly, Cal.com…) — "open to a meeting" signal. */
+  scheduler?: string;
 }
 
 /** A named human at a company — may not have a published email yet. */
@@ -68,6 +72,12 @@ export interface EmployeeEnrichResult {
   errors: string[];
   /** The emails this run found (guessed + published), with pattern + score. */
   emails: { email: string; personName: string; pattern: string; score: number }[];
+  /**
+   * Catch-all probe outcome for the domain: true = the domain accepts ANY
+   * address (guessed emails there are unreliable, verification was skipped),
+   * false = normal domain, null = unknown (probe failed).
+   */
+  catchAll?: boolean | null;
 }
 
 export interface Categorization {

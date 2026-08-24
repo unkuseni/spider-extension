@@ -4,7 +4,7 @@
 
 import type { Config } from "./config.ts";
 import type { Categorization, CompanyRelation, ContactRecord, Interest, PageContent } from "./types.ts";
-import { emailNameHint, extractEmails, extractLinkedin, extractPhones } from "./extract.ts";
+import { emailNameHint, extractEmails, extractLinkedin, extractPhones, extractSocial } from "./extract.ts";
 import { extractNamedPeople } from "./people.ts";
 import { log } from "./log.ts";
 
@@ -411,6 +411,9 @@ export function parseContactsLocal(pages: PageContent[]): ContactRecord[] {
     const emails = extractEmails(page.markdown);
     const phones = extractPhones(page.markdown);
     const linkedin = extractLinkedin(page.markdown);
+    // Social + scheduling channels on the page — a scheduler link is a strong
+    // "open to outreach" signal, and Twitter/X is a reachable outreach surface.
+    const social = extractSocial(page.markdown);
     for (const email of emails) {
       const key = email;
       if (seen.has(key)) continue;
@@ -419,6 +422,8 @@ export function parseContactsLocal(pages: PageContent[]): ContactRecord[] {
         email,
         person_name: emailNameHint(email) ?? undefined,
         linkedin: linkedin[0],
+        twitter: social.twitter[0],
+        scheduler: social.scheduler[0],
         phone: phones[0],
       });
     }
@@ -439,6 +444,8 @@ export function parseContactsLocal(pages: PageContent[]): ContactRecord[] {
         person_name: person.name,
         title: person.title,
         linkedin: person.linkedin,
+        twitter: social.twitter[0],
+        scheduler: social.scheduler[0],
         github: undefined,
       });
     }
@@ -476,9 +483,11 @@ export async function parseContacts(
       const system =
         "You extract business contact information from website pages for B2B lead generation. " +
         "Return ONLY a JSON object: {\"contacts\": [{\"email\": \"…\", \"person_name\": \"…\", " +
-        "\"title\": \"…\", \"phone\": \"…\", \"linkedin\": \"…\"}]}. " +
+        "\"title\": \"…\", \"phone\": \"…\", \"linkedin\": \"…\", \"twitter\": \"…\", \"scheduler\": \"…\"}]}. " +
         "Include only real contact records that appear in the text. Include team members even when no " +
         "email is published (set email to null — the name, title and LinkedIn are what matter). " +
+        "twitter = the person's Twitter/X profile URL if visible; scheduler = any scheduling/booking link " +
+        "on the page (Calendly, Cal.com, HubSpot meetings, SavvyCal…). " +
         "Email must look like a real address (reject image filenames, placeholder domains, @example.com etc.). " +
         "Use null for unknown fields.";
       const user = `Company: ${company}\n\nPages:\n\n${snippet}`;
@@ -491,6 +500,8 @@ export async function parseContacts(
           title: typeof c.title === "string" ? c.title : undefined,
           phone: typeof c.phone === "string" ? c.phone : undefined,
           linkedin: typeof c.linkedin === "string" ? c.linkedin : undefined,
+          twitter: typeof c.twitter === "string" ? c.twitter : undefined,
+          scheduler: typeof c.scheduler === "string" ? c.scheduler : undefined,
           github: typeof c.github === "string" ? c.github : undefined,
         };
         const key = rec.email ?? `p:${rec.phone ?? rec.person_name ?? Math.random()}`;

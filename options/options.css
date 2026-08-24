@@ -309,3 +309,34 @@ body {
   font-size: 12px;
 }
 .small-muted { color: var(--text-muted); font-size: 12px; }
+
+/* ─── Setup progress strip ─── */
+.setup-progress {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+.setup-progress.done { border-color: rgba(52, 211, 153, 0.4); }
+.setup-progress-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.setup-progress.done .setup-progress-title { color: var(--success); }
+.setup-progress-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.setup-pill {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.setup-pill.ok { color: var(--success); border-color: rgba(52, 211, 153, 0.45); background: rgba(52, 211, 153, 0.08); }
+.setup-pill.missing { color: var(--danger); border-color: rgba(248, 113, 113, 0.45); background: rgba(248, 113, 113, 0.08); }
+.setup-progress-hint { margin-top: 6px; }
+
+/* ─── ICP quick-pick presets ─── */
+.icp-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }

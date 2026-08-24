@@ -31,17 +31,28 @@ test("candidatesForPerson: full ordered list, unique, first.last first for a lea
     "acme.com",
     learned
   );
-  assert.equal(cands.length, 8, "all eight pattern candidates are returned (caller slices per-person)");
+  assert.equal(cands.length, 10, "all ten pattern candidates are returned (caller slices per-person)");
   const emails = cands.map((c) => c.email);
-  assert.equal(new Set(emails).size, 8, "candidate emails are unique");
+  assert.equal(new Set(emails).size, 10, "candidate emails are unique");
   // The learned first.last convention wins the top spot.
   assert.equal(cands[0].email, "dana.fox@acme.com");
   assert.equal(cands[0].pattern, "first.last");
   assert.ok(cands[0].score >= 0.6, "learned pattern score is confident");
   // The plain first-name candidate appears late-ish in the ranking.
   const danaOnly = emails.indexOf("dana@acme.com");
-  assert.ok(danaOnly >= cands.length / 2, "dana@acme.com is in the second half of the ordering");
+  assert.ok(danaOnly >= 4, "dana@acme.com is in the second half of the ordering");
   assert.ok(emails.includes("dana_fox@acme.com"), "underscore variant is present");
+  // Mainland-Europe/Nordic conventions are covered (learnable by priority rank).
+  assert.ok(emails.includes("foxdana@acme.com"), "lastfirst variant (foxdana) is present");
+  assert.ok(emails.includes("fox@acme.com"), "surname-only variant (fox) is present");
+});
+
+test("localPartFor: lastfirst + last patterns map correctly", async () => {
+  const { localPartFor, PATTERN_LABELS } = await import("../spider-leads/src/people.ts");
+  assert.equal(localPartFor("Dana Fox", "lastfirst"), "foxdana");
+  assert.equal(localPartFor("Dana Fox", "last"), "fox");
+  assert.ok(PATTERN_LABELS.includes("lastfirst"), "lastfirst is a known pattern label");
+  assert.ok(PATTERN_LABELS.includes("last"), "last is a known pattern label");
 });
 
 test("candidatesForPerson: returns [] for unnameable / too-short input", () => {

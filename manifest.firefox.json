@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Spider — Web Scraper & Crawler",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Scrape any page, crawl entire sites, and extract clean web data — powered by Spider Cloud.",
   "author": "spider-rs",
   "homepage_url": "https://spider.cloud",

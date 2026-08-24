@@ -8,6 +8,41 @@ import { log } from "./log.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Detect whether a domain accepts ANY address (a "catch-all" mailbox).
+ *
+ * Catch-all domains are the single biggest source of false-positive guessed
+ * emails: a pattern-inferred address like jane.doe@catchall.com verifies even
+ * though jane.doe doesn't actually exist, because the mailbox swallows
+ * everything. For a lead-gen tool that INFERS addresses, trusting a catch-all
+ * domain turns a guessed lead into a permanently dead bounce — so before we
+ * believe any guessed address at a domain, we send a probe to a clearly-bogus
+ * local part. If that absurd address verifies, the domain is catch-all and we
+ * must not trust any guessed address there.
+ *
+ * Returns true (catch-all), false (normal), or null (probe failed — unknown).
+ * A null means "don't block the run"; it just skips the optimisation.
+ */
+export async function probeCatchAll(cfg: Config, domain: string): Promise<boolean | null> {
+  if (!cfg.plunkApiKey) return null;
+  const clean = domain.toLowerCase().replace(/^www\./, "");
+  // A local part that cannot be a real person or match any email pattern:
+  // hyphens fail every dot/plain shape check, so the probe stays unambiguous.
+  const probeLocal = "zz-catchall-probe-" + Math.random().toString(36).slice(2, 10);
+  const probeEmail = probeLocal + "@" + clean;
+  try {
+    const res = await verifyEmail(cfg, probeEmail);
+    if (res.valid && !res.isDisposable) {
+      log.info(`Catch-all domain detected: ${clean} accepts bogus address ${probeEmail}`);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    log.debug(`catch-all probe for ${clean} failed (${(err as Error).message}) — assuming unknown`);
+    return null;
+  }
+}
+
 export async function verifyEmail(cfg: Config, email: string): Promise<VerificationResult> {
   if (!cfg.plunkApiKey) throw new Error("PLUNK_API_KEY is not set");
   const resp = await fetch(cfg.plunkApiBase.replace(/\/$/, "") + "/v1/verify", {

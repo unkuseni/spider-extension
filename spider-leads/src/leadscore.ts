@@ -90,6 +90,14 @@ export interface ScoreInput {
   /** Human-specified ICP match (true/false/null when ICP rules are unset). */
   icpMatch?: boolean | null;
   title?: string | null;
+  /** Plunk: disposable mailbox (useless for outreach — kills the lead). */
+  isDisposable?: boolean | null;
+  /** Plunk: the domain accepts mail (no MX records = undeliverable). */
+  hasMxRecords?: boolean | null;
+  /** Plunk: the domain itself exists. */
+  domainExists?: boolean | null;
+  /** Plunk: a personal-mail provider mailbox (gmail… — lower B2B value). */
+  isPersonalEmail?: boolean | null;
 }
 
 function seniorityWeight(s: Seniority): number {
@@ -118,6 +126,11 @@ function tierWeight(tier?: string | null): number {
  * mapping is inferred, and the confidence score reflects that.
  */
 export function scoreLead(input: ScoreInput): { score: number; grade: LeadGrade } {
+  // Disposable mailboxes are dead leads for outreach — nobody replies to a
+  // throwaway address, so score zero regardless of title/tier/ICP.
+  if (input.isDisposable === true) {
+    return { score: 0, grade: "D" };
+  }
   // Email veracity factor 0..1
   let emailFactor: number;
   if (input.emailValid === 0) {
@@ -138,7 +151,14 @@ export function scoreLead(input: ScoreInput): { score: number; grade: LeadGrade 
   const tw = tierWeight(input.companyTier);
   const conf = Math.min(1, Math.max(0, input.companyConfidence ?? 0.5));
 
-  let score = 100 * emailFactor * (0.55 + 0.45 * sr) * (0.7 + 0.3 * tw) * (0.92 + 0.08 * conf);
+  // Deliverability multiplier from the verification signals. A "valid" address
+  // at a domain that cannot receive mail (no MX) or that doesn't exist is still
+  // undeliverable, and personal-mailbox leads are lower-value for B2B outreach.
+  let deliverability = 1.0;
+  if (input.hasMxRecords === false || input.domainExists === false) deliverability = 0.4;
+  else if (input.isPersonalEmail === true) deliverability = 0.9;
+
+  let score = 100 * emailFactor * deliverability * (0.55 + 0.45 * sr) * (0.7 + 0.3 * tw) * (0.92 + 0.08 * conf);
   if (input.icpMatch === true) score += 12;
   else if (input.icpMatch === false) score -= 10;
 

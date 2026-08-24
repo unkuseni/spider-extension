@@ -4,7 +4,7 @@ import type { Client } from "@libsql/client";
 import type { Config } from "./config.ts";
 import { requireSpiderKey } from "./config.ts";
 import type {
-  Categorization, ContactRecord, PageContent, Person, RequestMode, RunSummary,
+  Categorization, ContactRecord, PageContent, Person, RequestMode, RunSummary, VerificationResult,
 } from "./types.ts";
 import {
   extractContactsSpider, getSiteLinks, scrapePage, searchPages, aiStudioExtract,
@@ -13,7 +13,7 @@ import { classifyEmailType, filterContactUrls, isValidEmail, domainOf, emailName
 import { categorizeDomain, parseContacts } from "./ai.ts";
 import { classifyTitle, icpMatch, scoreLead } from "./leadscore.ts";
 import { verifyBatch } from "./plunk.ts";
-import { initSchema, openDb, recordRun, recordVerification, upsertLead, upsertRelation, unverifiedEmails } from "./db.ts";
+import { initSchema, leadRowByEmail, openDb, recordRun, recordVerification, updateLeadScore, upsertLead, upsertRelation, unverifiedEmails } from "./db.ts";
 import { enrichDomain, storePersons } from "./enrich.ts";
 import { fireHook } from "./hooks.ts";
 import type { Plugin } from "./types.ts";
@@ -118,10 +118,57 @@ export function normalizeContacts(contacts: ContactRecord[], pages: PageContent[
       phone: phone || undefined,
       linkedin: c.linkedin?.trim() || undefined,
       github: c.github?.trim() || undefined,
+      twitter: c.twitter?.trim() || undefined,
+      scheduler: c.scheduler?.trim() || undefined,
     });
   }
   void pages;
   return out;
+}
+
+/**
+ * Re-score a lead the moment its Plunk verification lands. The initial score is
+ * necessarily optimistic (emailValid unknown); the verified truth — validity,
+ * disposable, MX records, domain existence, personal mailbox — immediately
+ * reshapes it: invalid/disposable emails collapse to D (dead lead), no-MX
+ * domains drop hard, personal mailboxes lose a little.
+ */
+export async function rescoreAfterVerification(
+  db: Client,
+  cfg: Config,
+  email: string,
+  res: VerificationResult
+): Promise<void> {
+  try {
+    const row = await leadRowByEmail(db, email);
+    if (!row) return;
+    let topics: string[] = [];
+    try {
+      const parsed = JSON.parse(row.interests ?? "[]");
+      topics = Array.isArray(parsed) ? parsed.map((i: any) => typeof i === "string" ? i : (i?.topic ?? "")) : [];
+    } catch { /* ignore malformed interests */ }
+    const cls = classifyTitle(row.title);
+    const icp = icpMatch(row.category, topics, cfg.icpCategories, cfg.icpInterests);
+    const { score, grade } = scoreLead({
+      emailValid: res.valid ? 1 : 0,
+      emailSource: row.email_source,
+      emailScore: row.email_score,
+      companyTier: row.tier,
+      companyConfidence: row.confidence,
+      icpMatch: icp,
+      title: row.title,
+      isDisposable: res.isDisposable,
+      hasMxRecords: res.hasMxRecords,
+      domainExists: res.domainExists,
+      isPersonalEmail: res.isPersonalEmail,
+    });
+    await updateLeadScore(db, email, {
+      department: cls.department, seniority: cls.seniority,
+      decisionMaker: cls.decisionMaker, leadScore: score, leadTier: grade, icpMatch: icp,
+    });
+  } catch (err) {
+    log.debug("rescore " + email + ": " + (err as Error).message);
+  }
 }
 
 /** Verify a set of emails with Plunk and write results to the DB. */
@@ -148,6 +195,7 @@ export async function verifyEmails(
         log.warn(email + " — INVALID");
       }
       await recordVerification(db, email, res, err);
+      if (!err) await rescoreAfterVerification(db, cfg, email, res);
       opts.onStatus?.(done, total, verified, invalid);
     },
   });
@@ -204,6 +252,7 @@ async function storeAndVerify(
 
   // Named humans (with or without a published email) go into the people table —
   // this is the employee directory used by pattern-based email inference.
+  // Social channels + scheduling links are kept as notes (outreach signal).
   const persons: Person[] = leads
     .filter((c) => c.person_name)
     .map((c) => ({
@@ -214,6 +263,8 @@ async function storeAndVerify(
       email: c.email,
       source: "page",
       sourceUrl: pages[0]?.url,
+      notes: [c.twitter ? "twitter: " + c.twitter : null, c.scheduler ? "scheduler: " + c.scheduler : null]
+        .filter(Boolean).join("\n") || undefined,
     }));
   if (!opts.dryRun && persons.length > 0) {
     const { newPeople } = await storePersons(db, domain, persons, company);

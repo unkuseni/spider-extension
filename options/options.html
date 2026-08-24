@@ -23,6 +23,16 @@
       <p class="subtitle">Configure your Spider Cloud API key and BYOK AI providers.</p>
     </header>
 
+    <!-- ─── Setup progress ─── -->
+    <div id="setupProgress" class="setup-progress">
+      <div class="setup-progress-title" id="setupProgressTitle">Setup progress</div>
+      <div id="setupProgressPills" class="setup-progress-pills"></div>
+      <p class="setup-progress-hint muted">
+        You need all four to use the <b>Leads</b> tab (Hunt / Search / Verify).
+        Missing one? Fill it in below and save.
+      </p>
+    </div>
+
     <!-- ─── Spider Cloud ─── -->
     <section class="card">
       <h2 class="section-title">
@@ -268,6 +278,24 @@
         <label class="label" for="icpCategories">ICP categories (comma-separated)</label>
         <input type="text" id="icpCategories" class="input" placeholder="SaaS / Software" />
         <p class="small-muted">Leads at companies matching these interests/categories score higher (A-D grades).</p>
+      </div>
+      <div class="form-group">
+        <label class="label">In a hurry? Quick-pick an Ideal Customer Profile</label>
+        <div class="icp-presets">
+          <button type="button" class="btn btn-sm btn-outline icp-preset"
+            data-cat="SaaS / Software" data-int="AI / Machine Learning, Cloud / DevOps, Data / Analytics">🤖 AI / SaaS</button>
+          <button type="button" class="btn btn-sm btn-outline icp-preset"
+            data-cat="Finance / Insurance, SaaS / Software" data-int="Fintech / Web3, Data / Analytics">💸 Fintech</button>
+          <button type="button" class="btn btn-sm btn-outline icp-preset"
+            data-cat="E-commerce / Retail" data-int="E-commerce, Marketing / Growth">🛒 E-commerce</button>
+          <button type="button" class="btn btn-sm btn-outline icp-preset"
+            data-cat="Agency / Services" data-int="Marketing / Growth, Sales / CRM">🧑‍🎨 Agencies</button>
+          <button type="button" class="btn btn-sm btn-outline icp-preset"
+            data-cat="" data-int="Sustainability / ESG">🌱 Sustainability</button>
+          <button type="button" class="btn btn-sm btn-outline icp-preset"
+            data-cat="Healthcare" data-int="Healthcare / Biotech">🏥 Healthcare</button>
+        </div>
+        <p class="small-muted">Fills both fields above with a sensible default — tweak them, then save. Leave both empty to score without an ICP adjustment.</p>
       </div>
       <label class="checkbox-label" title="AI Studio endpoints (prompt→JSON). Requires a Spider AI Studio subscription; each request spends credits.">
         <input type="checkbox" id="leadsAiStudio" />

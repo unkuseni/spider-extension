@@ -18,6 +18,10 @@ const PATTERN_PRIOR: Record<string, number> = {
   "first_last": 0.04,
   "firstl": 0.02,
   "last.first": 0.02,
+  // lastfirst + last: lower prior globally, but common in mainland Europe/Nordics
+  // and worth trying — a verified hit learns the convention fast (boost × 0.35).
+  "lastfirst": 0.02,
+  "last": 0.02,
 };
 
 export interface LearnedPatterns {

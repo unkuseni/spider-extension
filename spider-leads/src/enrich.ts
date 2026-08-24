@@ -11,10 +11,10 @@ import { findGithubPeople } from "./github.ts";
 import { classifyTitle, icpMatch, scoreLead } from "./leadscore.ts";
 import { classifyEmailType, isValidEmail } from "./extract.ts";
 import {
-  candidatesForDomain, knownEmailsForDomain, markCandidate, peopleForDomain, recordVerification,
-  upsertCandidate, upsertLead, upsertPerson,
+  candidatesForDomain, getDomainMeta, knownEmailsForDomain, markCandidate, peopleForDomain, recordVerification,
+  setDomainCatchAll, upsertCandidate, upsertLead, upsertPerson,
 } from "./db.ts";
-import { verifyBatch, verifyEmail } from "./plunk.ts";
+import { probeCatchAll, verifyBatch, verifyEmail } from "./plunk.ts";
 import { log } from "./log.ts";
 
 export interface EnrichOptions {
@@ -205,6 +205,37 @@ export async function enrichDomain(
   }
   if (opts.dryRun) return result;
 
+  // 3.5) Catch-all guard. A domain that accepts ANY address makes every guessed
+  // address "verify" — the #1 false-positive source for inferred emails, and a
+  // marketer's worst nightmare (their whole outreach list bounces). Probe it once
+  // per domain (cached in domain_meta). On a catch-all domain we skip verification
+  // and persist the candidates as pending instead of storing garbage as leads.
+  let catchAll: boolean | null = null;
+  try {
+    const metaRow = await getDomainMeta(db, domain);
+    if (metaRow?.is_catchall != null) {
+      catchAll = metaRow.is_catchall === 1;
+    } else {
+      catchAll = await probeCatchAll(cfg, domain);
+      if (catchAll !== null) await setDomainCatchAll(db, domain, catchAll);
+    }
+  } catch (err) {
+    result.errors.push("catch-all probe: " + (err as Error).message);
+  }
+  result.catchAll = catchAll;
+  if (catchAll === true) {
+    // Don't burn N verify calls on a mailbox that accepts everything — they'd all
+    // "verify" and create false-positive leads. Persist as pending, marked.
+    for (const c of candidates) {
+      if (!opts.dryRun) {
+        await upsertCandidate(db, c);
+        await markCandidate(db, c.email, "pending", "catch-all domain — guessed addresses cannot be trusted");
+      }
+    }
+    progress(opts, domain + " is a catch-all domain: guessed addresses would all 'verify', so no leads were stored.");
+    return result;
+  }
+
   // 4) Verify — one Plunk call per candidate, bounded concurrency.
   progress(opts, "Verifying " + candidates.length + " candidate email(s) with Plunk…");
   const byEmail = new Map(candidates.map((c) => [c.email, c]));
@@ -237,6 +268,10 @@ export async function enrichDomain(
             companyConfidence: meta.confidence,
             icpMatch: icp,
             title: personTitle,
+            isDisposable: res.isDisposable,
+            hasMxRecords: res.hasMxRecords,
+            domainExists: res.domainExists,
+            isPersonalEmail: res.isPersonalEmail,
           });
           await upsertLead(db, {
             email,
@@ -309,7 +344,19 @@ async function storePublicEmail(
         log.debug("  ✗ github " + email + " invalid — not stored");
         return;
       }
-      await upsertLead(db, lead);
+      if (res.isDisposable) {
+        result.invalid++;
+        log.debug("  ✗ github " + email + " is a disposable mailbox — not stored");
+        return;
+      }
+      const lead2 = githubLead(email, person, domain, meta, cfg, {
+        emailValid: 1,
+        isDisposable: res.isDisposable,
+        hasMxRecords: res.hasMxRecords,
+        domainExists: res.domainExists,
+        isPersonalEmail: res.isPersonalEmail,
+      });
+      await upsertLead(db, lead2);
       await recordVerification(db, email, res);
     } catch (err) {
       result.errors.push(email + ": " + (err as Error).message);
@@ -333,19 +380,24 @@ function githubLead(
   person: Person,
   domain: string,
   meta: Partial<Categorization> & { company?: string },
-  cfg: Config
+  cfg: Config,
+  signals?: { emailValid?: number | null; isDisposable?: boolean; hasMxRecords?: boolean; domainExists?: boolean; isPersonalEmail?: boolean }
 ): Lead {
   const interests = meta.interests ?? [];
   const cls = classifyTitle(person.title);
   const icp = icpMatch(meta.category, interests.map((i) => i.topic), cfg.icpCategories, cfg.icpInterests);
   const { score, grade } = scoreLead({
-    emailValid: null,
+    emailValid: signals?.emailValid ?? null,
     emailScore: null,
     emailSource: "github",
     companyTier: meta.tier,
     companyConfidence: meta.confidence,
     icpMatch: icp,
     title: person.title,
+    isDisposable: signals?.isDisposable,
+    hasMxRecords: signals?.hasMxRecords,
+    domainExists: signals?.domainExists,
+    isPersonalEmail: signals?.isPersonalEmail,
   });
   return {
     email,

@@ -53,6 +53,30 @@ test("scoreLead: invalid emails are dead leads", () => {
   assert.equal(grade, "D");
 });
 
+test("scoreLead: disposable mailboxes collapse to D regardless of title/tier", () => {
+  const { score, grade } = scoreLead({
+    emailValid: 1, emailSource: "page", title: "CEO", companyTier: "Enterprise",
+    icpMatch: true, isDisposable: true,
+  });
+  assert.equal(score, 0, "disposable = dead lead for outreach");
+  assert.equal(grade, "D");
+});
+
+test("scoreLead: no-MX / non-existent domains are heavily penalized", () => {
+  const normal = scoreLead({ emailValid: 1, emailSource: "page", title: "Founder", companyTier: "Enterprise" });
+  const noMx = scoreLead({ emailValid: 1, emailSource: "page", title: "Founder", companyTier: "Enterprise", hasMxRecords: false });
+  const noDomain = scoreLead({ emailValid: 1, emailSource: "page", title: "Founder", companyTier: "Enterprise", domainExists: false });
+  assert.ok(noMx.score < normal.score, "no-MX domain scores below a deliverable one");
+  assert.ok(noDomain.score < normal.score, "non-existent domain scores below a deliverable one");
+  assert.ok(noMx.score < 60, "undeliverable domain drops the lead to cold");
+});
+
+test("scoreLead: personal-mailbox leads lose a little (lower B2B value)", () => {
+  const normal = scoreLead({ emailValid: 1, emailSource: "page", title: "Founder", companyTier: "Enterprise" });
+  const personal = scoreLead({ emailValid: 1, emailSource: "page", title: "Founder", companyTier: "Enterprise", isPersonalEmail: true });
+  assert.ok(personal.score < normal.score, "personal mailboxes score below corporate ones");
+});
+
 test("scoreLead: unverified published email sits between guessed and verified", () => {
   const unverified = scoreLead({ emailValid: null, emailSource: "page", title: "Founder" });
   const guessed = scoreLead({ emailValid: 1, emailSource: "guessed", emailScore: 0.3, title: "Founder" });
