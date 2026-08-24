@@ -594,7 +594,7 @@ export async function relatedDomainsFor(db: Client, domain: string, opts: { limi
           UNION
           SELECT from_domain AS domain, type FROM company_relations
            WHERE target_domain = ? AND from_domain != ?
-          ORDER BY domain LIMIT ?`,
+          ORDER BY 1 LIMIT ?`,
     args: [domain, domain, domain, domain, opts.limit ?? 200],
   });
   return res.rows as unknown as { domain: string; type: string }[];

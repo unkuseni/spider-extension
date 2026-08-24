@@ -632,7 +632,7 @@ async function main(): Promise<number> {
       case "relations": {
         const db = await ensureDb(cfg);
         const targets = positionals.length > 0 ? positionals : await (async () => {
-          const res = await db.execute("SELECT DISTINCT domain FROM company_relations");
+          const res = await db.execute("SELECT DISTINCT from_domain AS domain FROM company_relations");
           return (res.rows as unknown as { domain: string }[]).map((r) => r.domain);
         })();
         if (targets.length === 0) {
