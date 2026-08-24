@@ -4,11 +4,11 @@
 import type { Config } from "./config.ts";
 import { extractMode, loadConfig, requestMode } from "./config.ts";
 import {
-  defaultRunOptions, ensureDb, extractContactsFromSite, hunt, huntSearch, verifyStored,
+  defaultRunOptions, ensureDb, extractContactsFromSite, findEmployees, hunt, huntSearch, verifyStored,
 } from "./pipeline.ts";
 import { runAgent } from "./agent.ts";
 import { enrichDomain } from "./enrich.ts";
-import { fetchStructured } from "./spider.ts";
+import { fetchStructured, listScraperDirectory } from "./spider.ts";
 import { discoverPluginsDir, installJsonPluginFile, loadPlugins, resolveNamedFilter } from "./plugins.ts";
 import type { Plugin, Person } from "./types.ts";
 import { dbStats, leadsRelatedTo, listLeads, listPeople, relationsForDomain, updateLeadScore } from "./db.ts";
@@ -52,6 +52,9 @@ const FLAGS: Flag[] = [
   { name: "proxy", takesValue: false },
   { name: "no-proxy", takesValue: false },
   { name: "country", takesValue: true },
+  { name: "ai-studio", takesValue: false },
+  { name: "no-ai-studio", takesValue: false },
+  { name: "category", takesValue: true },
   { name: "readability", takesValue: false },
   { name: "guess", takesValue: false },
   { name: "no-guess", takesValue: false },
@@ -111,6 +114,10 @@ COMMANDS
   search <query>          Search the web and extract leads from result pages
   fetch <url>             Structured extraction via Spider's curated/AI per-site scraper
                           configs (zillow.com, indeed.com, yelp.com…; /fetch API)
+  employees <domain...>   Employee scraper: extract a site's people (names/titles/emails
+                          via AI Studio prompt → JSON when enabled; standard pipeline
+                          otherwise), store them as people/leads, optionally infer emails
+  scrapers [--domain D]   Browse Spider's scraper-directory config catalog (no auth)
   enrich <domain...>      Infer employee emails: discover people, learn the domain's email
                           pattern, generate candidates, verify with Plunk, store valid ones
   people                  List discovered people (--domain X, --no-email)
@@ -140,6 +147,10 @@ FLAGS
                        (residential rotation — for bot-protected sites)
       --no-proxy       Disable the premium proxy
       --country CC     ISO-2 country for proxy georouting, e.g. --country us (en/de…)
+      --ai-studio      Use Spider AI Studio /ai/* endpoints (prompt→JSON; needs an
+                       AI Studio subscription — credits apply)
+      --no-ai-studio   Disable AI Studio endpoints
+      --category C     Filter scraper catalog by category (scrapers)
       --readability    Strip navigation/ads, main content only (fetch)
       --guess          Infer employee emails (pattern-based) after hunting; verify with Plunk
       --no-guess       Disable employee email inference
@@ -256,6 +267,8 @@ async function main(): Promise<number> {
   if (flags["no-proxy"]) cfg.spiderProxy = false;
   else if (flags.proxy) cfg.spiderProxy = true;
   if (typeof flags.country === "string") cfg.spiderCountry = flags.country;
+  if (flags["no-ai-studio"]) cfg.aiStudio = false;
+  else if (flags["ai-studio"]) cfg.aiStudio = true;
 
   // Load plugins once for commands that support them.
   let plugins: Plugin[] = [];
@@ -431,6 +444,62 @@ async function main(): Promise<number> {
         if (flags.json) console.log(JSON.stringify(rows, null, 2));
         else printPeople(rows);
         await db.close();
+        return 0;
+      }
+      case "employees": {
+        if (positionals.length === 0) {
+          throw new Error("employees needs at least one domain. e.g. spider-leads employees acme.com");
+        }
+        const opts = defaultRunOptions(cfg);
+        opts.limit = numFlag(flags, "limit", opts.limit);
+        opts.mode = requestMode(typeof flags.mode === "string" ? flags.mode : "smart");
+        opts.extract = extractMode(typeof flags.extract === "string" ? flags.extract : cfg.spiderExtract);
+        opts.verify = flags["no-verify"] ? false : cfg.verifyOnHunt;
+        opts.dryRun = !!flags["dry-run"];
+        opts.concurrency = numFlag(flags, "concurrency", opts.concurrency);
+        opts.guessEmails = flags["no-guess"] ? false : flags.guess ? true : cfg.guessEmails;
+        opts.perPerson = numFlag(flags, "per-person", cfg.guessPerPerson);
+        if (typeof flags.github === "string") {
+          opts.githubOrgs = flags.github.split(",").map((s) => s.trim()).filter(Boolean);
+        }
+        opts.plugins = plugins;
+        const db = await ensureDb(cfg);
+        const summary = await findEmployees(db, cfg, positionals, opts);
+        printRunSummary(summary);
+        const { listLeads: ll } = await import("./db.ts");
+        for (const r of await ll(db, { minScore: 0, limit: 10 })) {
+          log.raw(`  ${r.email ?? "(no email)"} · ${r.person_name ?? ""} ${r.title ?? ""} @ ${r.company ?? r.domain} [${r.lead_tier ?? "-"} ${r.lead_score ?? ""}]`);
+        }
+        await db.close();
+        return 0;
+      }
+      case "scrapers": {
+        const configs = await listScraperDirectory({
+          domain: typeof flags.domain === "string" ? flags.domain : undefined,
+          category: typeof flags.category === "string" ? flags.category : undefined,
+          limit: numFlag(flags, "limit", 50),
+        });
+        if (flags.json) {
+          console.log(JSON.stringify(configs, null, 2));
+          return 0;
+        }
+        if (configs.length === 0) {
+          log.info("No scraper configs found — try without filters.");
+          return 0;
+        }
+        log.raw(`Spider scraper-directory configs (${configs.length}):`);
+        log.raw("domain        path                     category       conf   fields  description");
+        for (const c of configs) {
+          log.raw(
+            (c.domain ?? "").padEnd(13) +
+            (String(c.path_pattern ?? "").padEnd(24).slice(0, 24)) +
+            (String(c.category ?? "").padEnd(15).slice(0, 15)) +
+            String(c.confidence_score?.toFixed(2) ?? "").padEnd(7) +
+            String(c.fields_count ?? "").padEnd(8) +
+            String(c.display_name ?? c.description ?? "").slice(0, 60)
+          );
+        }
+        log.raw("Tip: spider-leads fetch <url> uses these configs automatically (first call bootstraps).");
         return 0;
       }
       case "fetch": {

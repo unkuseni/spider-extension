@@ -12,6 +12,8 @@ export interface Config {
   spiderProxy: boolean;
   /** Target a country for proxy georouting (ISO 3166-1 alpha-2, e.g. "us"). */
   spiderCountry: string;
+  /** Use Spider AI Studio endpoints (/ai/* — needs an AI Studio subscription). */
+  aiStudio: boolean;
 
   tursoUrl: string;
   tursoAuthToken: string;
@@ -65,6 +67,7 @@ export function loadConfig(): Config {
     crawlDepth: num("SPIDER_CRAWL_DEPTH", 2),
     spiderProxy: str("SPIDER_PROXY", "false") === "true",
     spiderCountry: str("SPIDER_COUNTRY", ""),
+    aiStudio: str("SPIDER_AI_STUDIO", "false") === "true",
 
     tursoUrl: tursoUrl || "file:leads.db",
     tursoAuthToken: str("TURSO_AUTH_TOKEN"),

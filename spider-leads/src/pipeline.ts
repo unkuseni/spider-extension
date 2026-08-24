@@ -7,7 +7,7 @@ import type {
   Categorization, ContactRecord, PageContent, Person, RequestMode, RunSummary,
 } from "./types.ts";
 import {
-  extractContactsSpider, getSiteLinks, scrapePage, searchPages,
+  extractContactsSpider, getSiteLinks, scrapePage, searchPages, aiStudioExtract,
 } from "./spider.ts";
 import { classifyEmailType, filterContactUrls, isValidEmail, domainOf, emailNameHint } from "./extract.ts";
 import { categorizeDomain, parseContacts } from "./ai.ts";
@@ -527,4 +527,146 @@ export async function ensureDb(cfg: Config): Promise<Client> {
   const db = openDb(cfg);
   await initSchema(db);
   return db;
+}
+
+// ---------------------------------------------------------------------------
+// Employee scraper — AI Studio prompt-driven extraction of a site's people,
+// falling back to the standard contact pipeline when AI Studio is not enabled.
+// ---------------------------------------------------------------------------
+
+export const EMPLOYEE_AI_PROMPT =
+  "Extract every team member and employee shown on this site: full name, job title, " +
+  "department (engineering/sales/marketing/product/operations/finance/hr/legal/other), " +
+  "LinkedIn URL, GitHub URL, and any published email. Include people WITHOUT an email " +
+  "(email stays null). Only include people actually listed on the site.";
+
+const EMPLOYEE_SCHEMA = {
+  name: "employees",
+  description: "Team members and employees of the company",
+  schema: {
+    type: "object",
+    properties: {
+      employees: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            title: { type: "string" },
+            department: { type: "string" },
+            email: { type: ["string", "null"] },
+            linkedin: { type: ["string", "null"] },
+            github: { type: ["string", "null"] },
+          },
+        },
+      },
+    },
+  },
+};
+
+interface AiEmployee {
+  name?: string;
+  title?: string;
+  department?: string;
+  email?: string | null;
+  linkedin?: string | null;
+  github?: string | null;
+}
+
+/** AI Studio crawl: one page object per page, employees pulled from extracted_data. */
+async function extractEmployeesAiStudio(
+  cfg: Config,
+  rootUrl: string,
+  opts: RunOptions
+): Promise<SiteExtraction> {
+  const errors: string[] = [];
+  const pages: PageContent[] = [];
+  const contacts: ContactRecord[] = [];
+  const results = await aiStudioExtract(cfg, "crawl", rootUrl, EMPLOYEE_AI_PROMPT, {
+    limit: opts.limit,
+    metadata: true,
+    schema: EMPLOYEE_SCHEMA,
+  });
+  for (const r of results) {
+    if (r.url) pages.push({ url: r.url, markdown: typeof r.content === "string" ? r.content : "", status: r.status });
+    if (r.error) errors.push(String(r.error));
+    const data: any = r.extractedData;
+    const items: AiEmployee[] = Array.isArray(data)
+      ? data
+      : Array.isArray(data?.employees) ? data.employees
+        : Array.isArray(data?.people) ? data.people : [];
+    for (const e of items) {
+      if (!e?.name && !e?.email) continue;
+      contacts.push({
+        person_name: e.name ?? undefined,
+        title: e.title ?? undefined,
+        email: e.email ?? undefined,
+        linkedin: e.linkedin ?? undefined,
+        github: e.github ?? undefined,
+      });
+    }
+  }
+  const domain = domainOf(rootUrl);
+  return { contacts, pages, errors, linksFound: results.length, linksSelected: results.length, domain };
+}
+
+/** Find employees for a set of targets (AI Studio first, standard pipeline fallback). */
+export async function findEmployees(
+  db: Client,
+  cfg: Config,
+  targets: string[],
+  opts: RunOptions
+): Promise<RunSummary> {
+  requireSpiderKey(cfg);
+  const merged = emptyRun(targets.join(", "), "employees");
+  for (const target of targets) {
+    const summary = emptyRun(target, "employees");
+    const startedAt = new Date().toISOString();
+    const rootUrl = toRootUrl(target);
+    const domain = domainOf(rootUrl);
+    log.step("Employees: " + domain);
+
+    let extraction: SiteExtraction;
+    if (cfg.aiStudio) {
+      log.info("Using AI Studio employee extraction (credits apply)");
+      try {
+        extraction = await extractEmployeesAiStudio(cfg, rootUrl, opts);
+      } catch (err) {
+        log.warn("AI Studio extraction failed (" + (err as Error).message + ") — falling back to standard extraction");
+        extraction = await extractContactsFromSite(cfg, target, opts);
+      }
+    } else {
+      extraction = await extractContactsFromSite(cfg, target, opts);
+    }
+    summary.errors.push(...extraction.errors);
+    summary.pagesCrawled += extraction.pages.length;
+    const contacts = extraction.contacts;
+    const pages = extraction.pages;
+    if (contacts.length === 0) {
+      log.warn("No people found for " + domain);
+      summary.errors.push(domain + ": no employees found");
+      await recordRun(db, {
+        id: summary.id, target: domain, source: "employees", startedAt,
+        finishedAt: new Date().toISOString(), pagesCrawled: pages.length,
+        leadsFound: 0, verified: 0, invalid: 0, errors: summary.errors,
+      });
+      mergeRun(merged, summary);
+      continue;
+    }
+
+    const people = contacts.filter((c) => c.person_name).length;
+    log.info(people + " person(s) found on " + domain);
+    const cat = await categorizeDomain(cfg, domain, pages.length > 0
+      ? pages
+      : [{ url: rootUrl, markdown: "", status: 200 }]);
+    await storeAndVerify(db, cfg, domain, domain, cat, contacts, pages, opts, summary);
+    await recordRun(db, {
+      id: summary.id, target: domain, source: "employees", startedAt,
+      finishedAt: new Date().toISOString(), pagesCrawled: pages.length,
+      leadsFound: summary.leadsFound, verified: summary.leadsVerified,
+      invalid: summary.leadsInvalid, errors: summary.errors,
+    });
+    mergeRun(merged, summary);
+  }
+  return merged;
 }

@@ -31,11 +31,12 @@ export interface AgentResult {
 
 const SYSTEM_PROMPT =
   "You are an autonomous B2B lead-generation agent. You have tools for web search, " +
-  "site crawling, contact extraction, employee discovery, email inference (pattern-based " +
-  "guessing + Plunk verification), company categorization (industry + interests + company " +
-  "relationships), lead scoring (department/seniority/grade), email verification (Plunk), " +
-  "storing leads (Turso), querying stored leads, and structured fetching of " +
-  "marketplace/listing pages (Zillow, Indeed, Yelp).\n" +
+  "site crawling, employee extraction (an 'employee scraper' — names/titles/departments " +
+  "via AI Studio prompt→JSON when enabled), contact extraction, employee discovery, " +
+  "email inference (pattern-based guessing + Plunk verification), company categorization " +
+  "(industry + interests + company relationships), lead scoring (department/seniority/grade), " +
+  "email verification (Plunk), storing leads (Turso), querying stored leads, scraper-catalog " +
+  "browsing, and structured fetching of marketplace/listing pages (Zillow, Indeed, Yelp).\n" +
   "Rules:\n" +
   "- Use the tools to accomplish the user's objective. NEVER invent data: only report what tools return.\n" +
   "- Typical flow: search_web to find targets → extract_contacts per target → " +

@@ -3,9 +3,9 @@
 
 export {
   hunt, huntSearch, verifyStored, ensureDb, defaultRunOptions,
-  extractContactsFromSite,
+  extractContactsFromSite, findEmployees, EMPLOYEE_AI_PROMPT,
 } from "../spider-leads/src/pipeline.ts";
-export type { RunOptions, RunSummary } from "../spider-leads/src/pipeline.ts";
+export type { RunOptions, RunSummary, SiteExtraction } from "../spider-leads/src/pipeline.ts";
 
 export {
   openDb, initSchema, listLeads, dbStats, upsertLead, recordVerification, unverifiedEmails,
@@ -18,8 +18,8 @@ export type { LeadRow, PersonRow, CandidateRow, RelationRow } from "../spider-le
 export { verifyEmail } from "../spider-leads/src/plunk.ts";
 export type { VerificationResult } from "../spider-leads/src/types.ts";
 
-export { getSiteLinks, scrapePage, crawlPages, searchPages, extractContactsSpider, fetchStructured, fetchPathFromUrl } from "../spider-leads/src/spider.ts";
-export type { FetchResult } from "../spider-leads/src/spider.ts";
+export { getSiteLinks, scrapePage, crawlPages, searchPages, extractContactsSpider, fetchStructured, fetchPathFromUrl, aiStudioExtract, listScraperDirectory } from "../spider-leads/src/spider.ts";
+export type { FetchResult, AiStudioPage, ScraperConfig } from "../spider-leads/src/spider.ts";
 export type { PageContent, ContactRecord } from "../spider-leads/src/types.ts";
 
 export { categorizeDomain, parseContacts, CATEGORIES, chatWithTools } from "../spider-leads/src/ai.ts";

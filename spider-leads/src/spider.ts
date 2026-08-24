@@ -197,6 +197,95 @@ export interface FetchResult {
   links?: string[];
 }
 
+// ---------------------------------------------------------------------------
+// AI Studio (prompt → JSON) — https://spider.cloud/docs/ai-studio
+// POST /ai/{scrape,crawl,search,browser,links,unblocker}. Requires an active
+// AI Studio subscription; every request spends credits separately from the
+// standard API billing. Responses are an ARRAY of page objects with
+// metadata.extracted_data holding the structured result.
+// ---------------------------------------------------------------------------
+
+export interface AiStudioPage {
+  url: string;
+  status: number;
+  error?: string | null;
+  /** Page content in the requested return_format (when requested). */
+  content?: unknown;
+  /** Structured data shaped by the prompt / extraction_schema. */
+  extractedData?: unknown;
+  links?: string[];
+}
+
+export async function aiStudioExtract(
+  cfg: Config,
+  route: "scrape" | "crawl" | "search" | "links",
+  urlOrSearch: string,
+  prompt: string,
+  opts: { limit?: number; metadata?: boolean; schema?: Record<string, unknown>; returnFormat?: string } = {}
+): Promise<AiStudioPage[]> {
+  const body: Record<string, unknown> = {
+    ...proxyFields(cfg),
+    prompt,
+    limit: opts.limit ?? 10,
+  };
+  if (route === "search") body.search = urlOrSearch;
+  else body.url = urlOrSearch;
+  if (opts.metadata === false) body.metadata = false;
+  if (opts.returnFormat) body.return_format = opts.returnFormat;
+  if (opts.schema) body.extraction_schema = opts.schema;
+
+  const data = await apiPost<any>(cfg, "/ai/" + route, body);
+  const arr = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.results) ? data.results
+      : Array.isArray(data?.pages) ? data.pages
+        : data?.data ? data.data : [];
+  return arr.map((r: any) => ({
+    url: String(r?.url ?? ""),
+    status: Number(r?.status ?? 0),
+    error: r?.error ?? null,
+    content: r?.content ?? null,
+    extractedData: r?.metadata?.extracted_data ?? r?.extracted_data ?? null,
+    links: Array.isArray(r?.links) ? r.links.map(String) : [],
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Scraper Directory (curated config catalog) — https://spider.cloud/docs/api/scraper-directory/
+// GET /data/scraper-directory — NO authentication required. Filter by domain/category.
+// ---------------------------------------------------------------------------
+
+export interface ScraperConfig {
+  id: string;
+  domain: string;
+  path_pattern: string | null;
+  display_name: string | null;
+  description: string | null;
+  category: string | null;
+  tags: string | null;
+  confidence_score: number;
+  validation_count: number;
+  fields_count: number;
+  page_title: string | null;
+}
+
+export async function listScraperDirectory(
+  opts: { domain?: string; category?: string; limit?: number; base?: string } = {}
+): Promise<ScraperConfig[]> {
+  const qs = new URLSearchParams();
+  if (opts.domain) qs.set("domain", opts.domain);
+  if (opts.category) qs.set("category", opts.category);
+  qs.set("limit", String(opts.limit ?? 50));
+  const resp = await fetch((opts.base ?? "https://api.spider.cloud") + "/data/scraper-directory?" + qs.toString(), {
+    headers: { Accept: "application/json" },
+  });
+  if (!resp.ok) {
+    throw new SpiderError(resp.status, "scraper-directory failed (" + resp.status + ")");
+  }
+  const j: any = await resp.json();
+  return Array.isArray(j?.data) ? j.data : [];
+}
+
 export function fetchPathFromUrl(input: string): { domain: string; path: string } {
   let u: URL;
   try {

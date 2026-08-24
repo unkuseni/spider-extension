@@ -104,6 +104,14 @@ npm start -- agent "find fintech companies interested in AI and verify their ema
 npm start -- fetch https://zillow.com/homes/
 npm start -- fetch https://zillow.com/homes/ --json
 
+# Employee scraper: turn a site into a people list (names/titles/departments) — AI Studio
+# prompt→JSON when enabled, else the standard contact pipeline; --guess infers missing emails
+npm start -- employees acme.com --ai-studio --guess
+
+# Browse Spider's curated scraper-config catalog (no API key needed)
+npm start -- scrapers --domain zillow.com
+npm start -- scrapers --limit 30 --json
+
 # Verify stored leads (default: status 'new')
 npm start -- verify --concurrency 5
 
@@ -157,6 +165,9 @@ npm start -- list --tier A --department sales
 | `--proxy` | Route requests through Spider's premium proxy pool (residential rotation) |
 | `--no-proxy` | Disable the premium proxy |
 | `--country CC` | ISO-2 country for proxy georouting, e.g. `--country us` |
+| `--ai-studio` | Use Spider AI Studio `/ai/*` endpoints (prompt→JSON; needs an AI Studio subscription — credits apply) |
+| `--no-ai-studio` | Disable AI Studio endpoints — standard extraction, no credits |
+| `--category C` | Filter the scraper catalog by category (`scrapers`) |
 | `--readability` | Strip navigation/ads — main content only (`fetch`) |
 | `--domain D` | Filter by domain (`people` command) |
 | `--no-email` | Only people without a published email (`people` command) |
@@ -181,6 +192,7 @@ npm start -- list --tier A --department sales
 | `SPIDER_CRAWL_LIMIT`, `SPIDER_CRAWL_DEPTH` | no | defaults 30 / 2 |
 | `SPIDER_PROXY` | no | `true` → use the premium proxy pool on every request |
 | `SPIDER_COUNTRY` | no | ISO-2 country for proxy georouting, e.g. `us` |
+| `SPIDER_AI_STUDIO` | no | `true` → use Spider AI Studio `/ai/*` endpoints (prompt→JSON); needs an AI Studio subscription — credits apply; defaults to standard extraction when off |
 | `GUESS_EMAILS` | no | `true` → infer employee emails automatically after `hunt`/`search` |
 | `GUESS_PER_PERSON` | no | Max candidate addresses per person (default 3) |
 | `GITHUB_TOKEN` | no | Raises GitHub org-discovery rate limit (60/h → 5000/h) |
@@ -396,6 +408,51 @@ npm start -- list --tier B --department product
 The agent also exposes `score_leads` (recompute + return the top-scoring leads) and
 `find_relationships` (AI-discover + persist a domain's relations).
 
+## Employee scraper & AI Studio
+
+Turn any company site into a people list. `employees` crawls the site and extracts **every
+team member**: name, title, department, LinkedIn/GitHub, published email. It has two modes:
+
+- **AI Studio (prompt → JSON)** — pass a plain-English prompt to Spider's `/ai/crawl` with an
+  `extraction_schema`; Spider renders the pages, runs the prompt, and hands back
+  `metadata.extracted_data.employees` as structured JSON. Requires an **active AI Studio
+  subscription** (see [AI Studio docs](https://spider.cloud/docs/ai-studio)) — every AI call
+  spends credits separately from the normal API billing, and a key that works on `/crawl` can
+  still be refused on `/ai/*`. Enable with `SPIDER_AI_STUDIO=true` (or `--ai-studio`).
+- **Standard pipeline (fallback)** — when AI Studio is off/unavailable, `employees` uses the
+  exact same contact extraction as `hunt`. No credits, same results quality on most sites.
+
+In both modes people go through the full pipeline: stored in `people` (even without an
+email), classified (department/seniority/decision-maker), scored & graded, company
+categorized with relationships — and `--guess` additionally infers + verifies missing
+emails with Plunk.
+
+```bash
+# Employees of one or more companies (AI Studio extraction; credits apply)
+npm start -- employees acme.com --ai-studio --guess
+
+# Same, without AI Studio (standard extraction, no credits)
+npm start -- employees acme.com globex.io --limit 10
+
+# Every extracted employee without an email becomes a guessing target
+npm start -- employees acme.com --ai-studio --guess --per-person 5
+```
+
+### Scraper catalog
+
+[Spider's scraper directory](https://spider.cloud/docs/api/scraper-directory/) is a catalog of
+curated per-site scraper configs (Zillow, Indeed, Yelp, …) — domain, path pattern, category,
+confidence score and field count. It needs **no API key**:
+
+```bash
+npm start -- scrapers                     # every config (capped at --limit)
+npm start -- scrapers --domain zillow.com # what's curated for one site
+npm start -- scrapers --limit 30 --json
+```
+
+These are the same configs `fetch` uses: the first `fetch` call to a domain bootstraps the
+config, later calls hit the cache.
+
 ## Scraping harder sites
 
 Spider Cloud's [request modes](https://spider.cloud/docs/overview/) (`smart` auto, `http`
@@ -482,7 +539,9 @@ npm start -- list && npm start -- stats
 src/
   index.ts     CLI (hunt, search, fetch, enrich, people, agent, score, relations, verify, list, stats, export, init-db)
   pipeline.ts  orchestration: links → filter → scrape → extract → categorize → store → verify
-  spider.ts    Spider Cloud REST client (links, scrape, crawl, search, extract-contacts)
+               (+ findEmployees: AI Studio employee scraper with standard fallback)
+  spider.ts    Spider Cloud REST client (links, scrape, crawl, search, extract-contacts,
+               /fetch configs, /ai/* prompt→JSON, scraper-directory catalog)
   ai.ts        OpenAI-compatible calls: domain categorization + contact parsing (rule fallback)
   extract.ts   regex email/phone/LinkedIn extraction + contact-URL filtering
   people.ts    named-person parsing (team/leadership pages), name splitting, GitHub handles
@@ -508,6 +567,8 @@ Instead of the fixed pipeline, the model can **call tools** to decide what to do
 | `crawl_site` / `get_links` | enumerate and crawl a site |
 | `extract_contacts` | scrape contact pages → emails/names/titles (+ email type) |
 | `fetch_structured` | curated Fetch API — structured items from Zillow/Indeed/Yelp-class pages |
+| `extract_employees` | employee scraper for a domain (AI Studio prompt→JSON or standard pipeline) |
+| `list_scrapers` | browse the curated scraper-config catalog (no keys needed) |
 | `find_employees` | discover named employees (name/title/LinkedIn/email) → people without emails |
 | `guess_emails` | infer + verify employee emails via the domain pattern, store valid ones |
 | `categorize_company` | industry category + interests + tier |

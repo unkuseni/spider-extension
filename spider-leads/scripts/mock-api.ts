@@ -134,6 +134,41 @@ export function createMockHandler(opts: MockOptions = {}) {
   const path = url.split("?")[0];
   try {
     // --- GitHub public data (employee discovery: org members + profiles) ---
+    if (method === "GET" && path === "/data/scraper-directory") {
+      const q = new URL(req.url ?? "", "http://x").searchParams;
+      const domain = q.get("domain");
+      const all = [
+        { id: "c1", domain: "zillow.com", path_pattern: "/homes/*", display_name: "Zillow Listings", description: "Real-estate listings with price/beds/baths", category: "real-estate", confidence_score: 0.91, fields_count: 8, page_title: "Zillow" },
+        { id: "c2", domain: "github.com", path_pattern: "/trending", display_name: "GitHub Trending", description: "Trending repos", category: "directory", confidence_score: 0.88, fields_count: 5, page_title: "GitHub" },
+        { id: "c3", domain: "indeed.com", path_pattern: "/jobs", display_name: "Indeed Jobs", description: "Job listings", category: "jobs", confidence_score: 0.85, fields_count: 6, page_title: "Indeed" },
+        { id: "c4", domain: "linkedin.com", path_pattern: "/*", display_name: "LinkedIn Public", description: "Public company profiles", category: "social", confidence_score: 0.7, fields_count: 7, page_title: "LinkedIn" },
+      ].filter((c) => !domain || c.domain === domain);
+      return json(res, 200, { data: all, total: all.length, page: 1, limit: 50 });
+    }
+    // AI Studio: prompt → JSON (returns an ARRAY of page objects with metadata.extracted_data).
+    if (method === "POST" && /^\/ai\/(scrape|crawl|search|links)/.test(path)) {
+      const body = await readBody(req);
+      const target = String(body.url ?? body.search ?? "https://acme.com/");
+      const host = hostnameOf(target);
+      const employees = [
+        { name: "Sarah Chen", title: "VP Engineering", department: "engineering", email: `sarah.chen@${host}`, linkedin: `https://linkedin.com/in/sarah-chen`, github: null },
+        { name: "James Ruiz", title: "Head of Sales", department: "sales", email: `james.ruiz@${host}`, linkedin: null, github: null },
+        { name: "Dana Fox", title: "Product Manager", department: "product", email: null, linkedin: `https://linkedin.com/in/dana-fox`, github: null },
+        { name: "Priya Kapoor", title: "CTO", department: "engineering", email: `priya.kapoor@${host}`, linkedin: `https://linkedin.com/in/priya-kapoor`, github: `https://github.com/priya` },
+      ];
+      const pages = (body.limit ?? 1) === 1
+        ? [{ url: `https://${host}/team` }]
+        : [`https://${host}/`, `https://${host}/team`, `https://${host}/about`].map((u) => ({ url: u }));
+      return json(res, 200, pages.map((p: any) => ({
+        url: p.url,
+        status: 200,
+        error: null,
+        content: pageContent(p.url),
+        metadata: { title: `${host} — employee extraction`, extracted_data: { employees } },
+        links: linksFor(p.url).map((l) => l.url),
+        costs: { total_cost: 0.0003, ai_cost: 0.00002 },
+      })));
+    }
     if (method === "GET" && /^\/orgs\/[^/]+\/members/.test(path)) {
       const org = decodeURIComponent(path.split("/")[2] ?? "");
       if (org === "acme-inc") {

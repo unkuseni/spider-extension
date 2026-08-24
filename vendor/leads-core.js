@@ -261,6 +261,42 @@ async function extractContactsSpider(cfg, url, opts = {}) {
   const arr = Array.isArray(data) ? data : [];
   return arr.filter((r) => r && typeof r === "object");
 }
+async function aiStudioExtract(cfg, route, urlOrSearch, prompt, opts = {}) {
+  const body = {
+    ...proxyFields(cfg),
+    prompt,
+    limit: opts.limit ?? 10
+  };
+  if (route === "search") body.search = urlOrSearch;
+  else body.url = urlOrSearch;
+  if (opts.metadata === false) body.metadata = false;
+  if (opts.returnFormat) body.return_format = opts.returnFormat;
+  if (opts.schema) body.extraction_schema = opts.schema;
+  const data = await apiPost(cfg, "/ai/" + route, body);
+  const arr = Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : Array.isArray(data?.pages) ? data.pages : data?.data ? data.data : [];
+  return arr.map((r) => ({
+    url: String(r?.url ?? ""),
+    status: Number(r?.status ?? 0),
+    error: r?.error ?? null,
+    content: r?.content ?? null,
+    extractedData: r?.metadata?.extracted_data ?? r?.extracted_data ?? null,
+    links: Array.isArray(r?.links) ? r.links.map(String) : []
+  }));
+}
+async function listScraperDirectory(opts = {}) {
+  const qs = new URLSearchParams();
+  if (opts.domain) qs.set("domain", opts.domain);
+  if (opts.category) qs.set("category", opts.category);
+  qs.set("limit", String(opts.limit ?? 50));
+  const resp = await fetch((opts.base ?? "https://api.spider.cloud") + "/data/scraper-directory?" + qs.toString(), {
+    headers: { Accept: "application/json" }
+  });
+  if (!resp.ok) {
+    throw new SpiderError(resp.status, "scraper-directory failed (" + resp.status + ")");
+  }
+  const j = await resp.json();
+  return Array.isArray(j?.data) ? j.data : [];
+}
 function fetchPathFromUrl(input) {
   let u;
   try {
@@ -7375,6 +7411,121 @@ async function ensureDb(cfg) {
   await initSchema(db);
   return db;
 }
+var EMPLOYEE_AI_PROMPT = "Extract every team member and employee shown on this site: full name, job title, department (engineering/sales/marketing/product/operations/finance/hr/legal/other), LinkedIn URL, GitHub URL, and any published email. Include people WITHOUT an email (email stays null). Only include people actually listed on the site.";
+var EMPLOYEE_SCHEMA = {
+  name: "employees",
+  description: "Team members and employees of the company",
+  schema: {
+    type: "object",
+    properties: {
+      employees: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            title: { type: "string" },
+            department: { type: "string" },
+            email: { type: ["string", "null"] },
+            linkedin: { type: ["string", "null"] },
+            github: { type: ["string", "null"] }
+          }
+        }
+      }
+    }
+  }
+};
+async function extractEmployeesAiStudio(cfg, rootUrl, opts) {
+  const errors = [];
+  const pages = [];
+  const contacts = [];
+  const results = await aiStudioExtract(cfg, "crawl", rootUrl, EMPLOYEE_AI_PROMPT, {
+    limit: opts.limit,
+    metadata: true,
+    schema: EMPLOYEE_SCHEMA
+  });
+  for (const r of results) {
+    if (r.url) pages.push({ url: r.url, markdown: typeof r.content === "string" ? r.content : "", status: r.status });
+    if (r.error) errors.push(String(r.error));
+    const data = r.extractedData;
+    const items = Array.isArray(data) ? data : Array.isArray(data?.employees) ? data.employees : Array.isArray(data?.people) ? data.people : [];
+    for (const e of items) {
+      if (!e?.name && !e?.email) continue;
+      contacts.push({
+        person_name: e.name ?? void 0,
+        title: e.title ?? void 0,
+        email: e.email ?? void 0,
+        linkedin: e.linkedin ?? void 0,
+        github: e.github ?? void 0
+      });
+    }
+  }
+  const domain = domainOf(rootUrl);
+  return { contacts, pages, errors, linksFound: results.length, linksSelected: results.length, domain };
+}
+async function findEmployees(db, cfg, targets, opts) {
+  requireSpiderKey(cfg);
+  const merged = emptyRun(targets.join(", "), "employees");
+  for (const target of targets) {
+    const summary = emptyRun(target, "employees");
+    const startedAt = (/* @__PURE__ */ new Date()).toISOString();
+    const rootUrl = toRootUrl(target);
+    const domain = domainOf(rootUrl);
+    log.step("Employees: " + domain);
+    let extraction;
+    if (cfg.aiStudio) {
+      log.info("Using AI Studio employee extraction (credits apply)");
+      try {
+        extraction = await extractEmployeesAiStudio(cfg, rootUrl, opts);
+      } catch (err) {
+        log.warn("AI Studio extraction failed (" + err.message + ") \u2014 falling back to standard extraction");
+        extraction = await extractContactsFromSite(cfg, target, opts);
+      }
+    } else {
+      extraction = await extractContactsFromSite(cfg, target, opts);
+    }
+    summary.errors.push(...extraction.errors);
+    summary.pagesCrawled += extraction.pages.length;
+    const contacts = extraction.contacts;
+    const pages = extraction.pages;
+    if (contacts.length === 0) {
+      log.warn("No people found for " + domain);
+      summary.errors.push(domain + ": no employees found");
+      await recordRun(db, {
+        id: summary.id,
+        target: domain,
+        source: "employees",
+        startedAt,
+        finishedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        pagesCrawled: pages.length,
+        leadsFound: 0,
+        verified: 0,
+        invalid: 0,
+        errors: summary.errors
+      });
+      mergeRun(merged, summary);
+      continue;
+    }
+    const people = contacts.filter((c2) => c2.person_name).length;
+    log.info(people + " person(s) found on " + domain);
+    const cat = await categorizeDomain(cfg, domain, pages.length > 0 ? pages : [{ url: rootUrl, markdown: "", status: 200 }]);
+    await storeAndVerify(db, cfg, domain, domain, cat, contacts, pages, opts, summary);
+    await recordRun(db, {
+      id: summary.id,
+      target: domain,
+      source: "employees",
+      startedAt,
+      finishedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      pagesCrawled: pages.length,
+      leadsFound: summary.leadsFound,
+      verified: summary.leadsVerified,
+      invalid: summary.leadsInvalid,
+      errors: summary.errors
+    });
+    mergeRun(merged, summary);
+  }
+  return merged;
+}
 
 // spider-leads/src/tools.ts
 function def(t) {
@@ -7650,6 +7801,66 @@ function buildTools(cfg, db, opts = {}) {
         return JSON.stringify(res);
       }
     },
+    extract_employees: {
+      name: "extract_employees",
+      description: "Employee scraper for a company site: extracts every person (name, title, department, LinkedIn/GitHub, published email) \u2014 via Spider AI Studio prompt\u2192JSON when enabled, otherwise via the standard contact pipeline. People without emails are stored and can be fed to guess_emails. Returns how many people/leads were found.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Company domain or URL, e.g. https://acme.com" },
+          limit: { type: "integer", description: "Max pages to crawl (default 10)" },
+          guess: { type: "boolean", description: "Also infer employee emails (default false)" }
+        },
+        required: ["url"]
+      },
+      async run(args) {
+        const url = String(args.url ?? "");
+        if (!url) return JSON.stringify({ error: "url required" });
+        const opts2 = defaultRunOptions(cfg);
+        opts2.limit = Number(args.limit) || 10;
+        opts2.guessEmails = args.guess === true;
+        opts2.verify = !!cfg.plunkApiKey;
+        const summary = await findEmployees(db, cfg, [url], opts2);
+        return JSON.stringify({
+          target: summary.target,
+          pagesCrawled: summary.pagesCrawled,
+          peopleFound: summary.peopleFound,
+          leadsFound: summary.leadsFound,
+          leadsNew: summary.leadsNew,
+          emailsVerified: summary.leadsVerified,
+          emailsFoundGuessed: summary.guessedEmailsFound,
+          errors: summary.errors
+        });
+      }
+    },
+    list_scrapers: {
+      name: "list_scrapers",
+      description: "Browse Spider's scraper-directory catalog (curated per-site scraper configs). Returns domains/paths with confidence + field counts so you can pick targets for fetch_structured. No API key needed.",
+      parameters: {
+        type: "object",
+        properties: {
+          domain: { type: "string", description: "Filter by domain, e.g. zillow.com" },
+          limit: { type: "integer", description: "Max rows (default 20)" }
+        }
+      },
+      async run(args) {
+        const configs = await listScraperDirectory({
+          domain: args.domain ? String(args.domain) : void 0,
+          limit: Number(args.limit) || 20
+        });
+        return JSON.stringify({
+          count: configs.length,
+          configs: configs.map((c2) => ({
+            domain: c2.domain,
+            path: c2.path_pattern,
+            category: c2.category,
+            confidence: c2.confidence_score,
+            fields: c2.fields_count,
+            description: (c2.display_name ?? c2.description ?? "").slice(0, 140)
+          }))
+        });
+      }
+    },
     score_leads: {
       name: "score_leads",
       description: "Recompute lead scores + role classification (department, seniority, decision maker, grade A-D) for stored leads, using the configured ICP rules when set. Returns the highest-scoring leads so the model can prioritize outreach.",
@@ -7874,7 +8085,7 @@ function buildTools(cfg, db, opts = {}) {
 }
 
 // spider-leads/src/agent.ts
-var SYSTEM_PROMPT = "You are an autonomous B2B lead-generation agent. You have tools for web search, site crawling, contact extraction, employee discovery, email inference (pattern-based guessing + Plunk verification), company categorization (industry + interests + company relationships), lead scoring (department/seniority/grade), email verification (Plunk), storing leads (Turso), querying stored leads, and structured fetching of marketplace/listing pages (Zillow, Indeed, Yelp).\nRules:\n- Use the tools to accomplish the user's objective. NEVER invent data: only report what tools return.\n- Typical flow: search_web to find targets \u2192 extract_contacts per target \u2192 find_employees to get names without emails \u2192 guess_emails to infer + verify their addresses \u2192 categorize_company \u2192 find_relationships to map partners/clients \u2192 score_leads \u2192 store_leads \u2192 verify_email for new emails (when verification is wanted).\n- fetch_structured is for curated configs / marketplace pages; extract_contacts is for company sites.\n- Never store fabricated emails. Email addresses must come from extraction results or from guess_emails (which verifies every inferred address with Plunk before storing).\n- Keep tool arguments minimal and correct; parse tool results before deciding next steps.\n- When the objective is complete (or blocked), reply with a concise final summary: targets examined, leads found/stored/updated, scores/grades, verified/invalid counts, categories + top interests + relationships, and any failures.";
+var SYSTEM_PROMPT = "You are an autonomous B2B lead-generation agent. You have tools for web search, site crawling, employee extraction (an 'employee scraper' \u2014 names/titles/departments via AI Studio prompt\u2192JSON when enabled), contact extraction, employee discovery, email inference (pattern-based guessing + Plunk verification), company categorization (industry + interests + company relationships), lead scoring (department/seniority/grade), email verification (Plunk), storing leads (Turso), querying stored leads, scraper-catalog browsing, and structured fetching of marketplace/listing pages (Zillow, Indeed, Yelp).\nRules:\n- Use the tools to accomplish the user's objective. NEVER invent data: only report what tools return.\n- Typical flow: search_web to find targets \u2192 extract_contacts per target \u2192 find_employees to get names without emails \u2192 guess_emails to infer + verify their addresses \u2192 categorize_company \u2192 find_relationships to map partners/clients \u2192 score_leads \u2192 store_leads \u2192 verify_email for new emails (when verification is wanted).\n- fetch_structured is for curated configs / marketplace pages; extract_contacts is for company sites.\n- Never store fabricated emails. Email addresses must come from extraction results or from guess_emails (which verifies every inferred address with Plunk before storing).\n- Keep tool arguments minimal and correct; parse tool results before deciding next steps.\n- When the objective is complete (or blocked), reply with a concise final summary: targets examined, leads found/stored/updated, scores/grades, verified/invalid counts, categories + top interests + relationships, and any failures.";
 function countToolCalls(calls) {
   return [...calls.entries()].map(([tool, count]) => ({ tool, count }));
 }
@@ -8404,7 +8615,9 @@ async function scoreFit(cfg, profile, job) {
 }
 export {
   CATEGORIES,
+  EMPLOYEE_AI_PROMPT,
   PATTERN_LABELS,
+  aiStudioExtract,
   buildProfile,
   buildTools,
   candidatesForDomain,
@@ -8430,6 +8643,7 @@ export {
   extractNamedPeople,
   fetchPathFromUrl,
   fetchStructured,
+  findEmployees,
   findGithubPeople,
   getSiteLinks,
   gradeLabel,
@@ -8444,6 +8658,7 @@ export {
   learnPatterns,
   listLeads,
   listPeople,
+  listScraperDirectory,
   markCandidate,
   openDb,
   parseContacts,

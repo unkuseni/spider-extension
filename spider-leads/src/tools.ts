@@ -6,8 +6,8 @@ import type { ToolDef } from "./ai.ts";
 import { categorizeDomain } from "./ai.ts";
 import type { PageContent, Person } from "./types.ts";
 import { classifyEmailType, domainOf, isValidEmail, toRoot } from "./extract.ts";
-import { crawlPages, fetchStructured, getSiteLinks, searchPages, scrapePage } from "./spider.ts";
-import { extractContactsFromSite, normalizeContacts } from "./pipeline.ts";
+import { crawlPages, fetchStructured, getSiteLinks, listScraperDirectory, searchPages, scrapePage } from "./spider.ts";
+import { defaultRunOptions, extractContactsFromSite, findEmployees, normalizeContacts } from "./pipeline.ts";
 import { enrichDomain } from "./enrich.ts";
 import { extractGithubOrgs } from "./people.ts";
 import { classifyTitle, icpMatch, scoreLead } from "./leadscore.ts";
@@ -338,6 +338,75 @@ export function buildTools(cfg: Config, db: Client, opts: AgentToolOpts = {}): R
           meta: { company: domain },
         });
         return JSON.stringify(res);
+      },
+    },
+
+    extract_employees: {
+      name: "extract_employees",
+      description:
+        "Employee scraper for a company site: extracts every person (name, title, department, " +
+        "LinkedIn/GitHub, published email) — via Spider AI Studio prompt→JSON when enabled, " +
+        "otherwise via the standard contact pipeline. People without emails are stored and can " +
+        "be fed to guess_emails. Returns how many people/leads were found.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Company domain or URL, e.g. https://acme.com" },
+          limit: { type: "integer", description: "Max pages to crawl (default 10)" },
+          guess: { type: "boolean", description: "Also infer employee emails (default false)" },
+        },
+        required: ["url"],
+      },
+      async run(args) {
+        const url = String(args.url ?? "");
+        if (!url) return JSON.stringify({ error: "url required" });
+        const opts = defaultRunOptions(cfg);
+        opts.limit = Number(args.limit) || 10;
+        opts.guessEmails = args.guess === true;
+        opts.verify = !!cfg.plunkApiKey;
+        const summary = await findEmployees(db, cfg, [url], opts);
+        return JSON.stringify({
+          target: summary.target,
+          pagesCrawled: summary.pagesCrawled,
+          peopleFound: summary.peopleFound,
+          leadsFound: summary.leadsFound,
+          leadsNew: summary.leadsNew,
+          emailsVerified: summary.leadsVerified,
+          emailsFoundGuessed: summary.guessedEmailsFound,
+          errors: summary.errors,
+        });
+      },
+    },
+
+    list_scrapers: {
+      name: "list_scrapers",
+      description:
+        "Browse Spider's scraper-directory catalog (curated per-site scraper configs). " +
+        "Returns domains/paths with confidence + field counts so you can pick targets " +
+        "for fetch_structured. No API key needed.",
+      parameters: {
+        type: "object",
+        properties: {
+          domain: { type: "string", description: "Filter by domain, e.g. zillow.com" },
+          limit: { type: "integer", description: "Max rows (default 20)" },
+        },
+      },
+      async run(args) {
+        const configs = await listScraperDirectory({
+          domain: args.domain ? String(args.domain) : undefined,
+          limit: Number(args.limit) || 20,
+        });
+        return JSON.stringify({
+          count: configs.length,
+          configs: configs.map((c) => ({
+            domain: c.domain,
+            path: c.path_pattern,
+            category: c.category,
+            confidence: c.confidence_score,
+            fields: c.fields_count,
+            description: (c.display_name ?? c.description ?? "").slice(0, 140),
+          })),
+        });
       },
     },
 

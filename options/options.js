@@ -134,6 +134,7 @@ async function loadLeadsSettings() {
   document.getElementById('leadsGuessPerPerson').value = settings.guessPerPerson || 3;
   document.getElementById('icpInterests').value = settings.icpInterests || '';
   document.getElementById('icpCategories').value = settings.icpCategories || '';
+  document.getElementById('leadsAiStudio').checked = settings.aiStudio === true;
 }
 
 async function saveLeadsSettings() {
@@ -150,6 +151,7 @@ async function saveLeadsSettings() {
       guessPerPerson: parseInt(document.getElementById('leadsGuessPerPerson').value) || 3,
       icpInterests: document.getElementById('icpInterests').value.trim(),
       icpCategories: document.getElementById('icpCategories').value.trim(),
+      aiStudio: document.getElementById('leadsAiStudio').checked,
     });
     status.textContent = '✓ Lead Finder settings saved';
     status.className = 'status-msg success';

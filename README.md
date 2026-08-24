@@ -50,6 +50,13 @@ Scrape any page, crawl entire sites, search the web — powered by [Spider Cloud
   mail app) or LinkedIn messages (copy & send yourself). The extension never auto-sends.
 - **AI plugin builder** — Options → Plugins → describe a plugin in plain language, the AI writes
   the JSON, you review and install it.
+- **Employee scraper + AI Studio** — the **👥 Employees** button (or `spider-leads employees`)
+  turns any company site into a people list (names, titles, departments, links, published
+  emails). With AI Studio enabled it uses Spider's prompt→JSON `/ai/*` endpoints (structured
+  `extracted_data`; needs an [AI Studio](https://spider.cloud/docs/ai-studio) subscription,
+  credits apply) and falls back to the standard extractor otherwise. The **📚 Scrapers**
+  button browses Spider's curated scraper-config catalog (Zillow/Indeed/Yelp…) — no key
+  needed.
 - **Harder sites** — requests can go through Spider Cloud's **premium proxy pool**
   (Options → Spider Cloud → *Premium proxy* + country code) to beat bot protection, and the
   CLI exposes the curated [Fetch API](https://spider.cloud/api/fetch) (`spider-leads fetch
@@ -94,7 +101,9 @@ The extension and the [spider-leads CLI](spider-leads/README.md) share one pipel
    - BYOK AI key — pick a provider; for **DeepSeek** set the OpenAI endpoint to
      `https://api.deepseek.com/v1/chat/completions` and model `deepseek-chat`
      (or `deepseek-v4-flash` for function-calling agent mode)
-   - Lead Finder: **Turso URL + token** (free at turso.tech) and **Plunk API key** (sk_*).
+   - Lead Finder: **Turso URL + token** (free at turso.tech) and **Plunk API key** (sk_*)
+   - Optional: **AI Studio** checkbox (Lead Finder) for prompt→JSON employee extraction —
+     needs a Spider AI Studio subscription (credits apply).
      Optionally set **ICP interests** and **ICP categories** (comma-separated) so lead
      scoring can favor your ideal customer profile — leave them empty to score without an
      ICP adjustment.

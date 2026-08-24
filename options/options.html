@@ -269,6 +269,10 @@
         <input type="text" id="icpCategories" class="input" placeholder="SaaS / Software" />
         <p class="small-muted">Leads at companies matching these interests/categories score higher (A-D grades).</p>
       </div>
+      <label class="checkbox-label" title="AI Studio endpoints (prompt→JSON). Requires a Spider AI Studio subscription; each request spends credits.">
+        <input type="checkbox" id="leadsAiStudio" />
+        <span>AI Studio extraction (employee scraper, prompt→JSON; credits)</span>
+      </label>
       <div class="form-group" style="margin-top:10px">
         <button id="saveLeadsBtn" class="btn btn-primary">Save Lead Finder Settings</button>
         <span id="leadsStatus" class="status-msg"></span>
