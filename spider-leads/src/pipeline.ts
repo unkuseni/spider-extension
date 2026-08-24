@@ -631,6 +631,13 @@ export async function findEmployees(
       log.info("Using AI Studio employee extraction (credits apply)");
       try {
         extraction = await extractEmployeesAiStudio(cfg, rootUrl, opts);
+        // Silent extraction failure: AI Studio may fetch pages but hand back no
+        // extracted_data (account without a full AI Studio subscription). Fall
+        // back to the standard pipeline so the user still gets results.
+        if (extraction.contacts.length === 0 && extraction.pages.length > 0) {
+          log.warn("AI Studio returned no employees — falling back to standard extraction");
+          extraction = await extractContactsFromSite(cfg, target, opts);
+        }
       } catch (err) {
         log.warn("AI Studio extraction failed (" + (err as Error).message + ") — falling back to standard extraction");
         extraction = await extractContactsFromSite(cfg, target, opts);

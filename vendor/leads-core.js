@@ -7481,6 +7481,10 @@ async function findEmployees(db, cfg, targets, opts) {
       log.info("Using AI Studio employee extraction (credits apply)");
       try {
         extraction = await extractEmployeesAiStudio(cfg, rootUrl, opts);
+        if (extraction.contacts.length === 0 && extraction.pages.length > 0) {
+          log.warn("AI Studio returned no employees \u2014 falling back to standard extraction");
+          extraction = await extractContactsFromSite(cfg, target, opts);
+        }
       } catch (err) {
         log.warn("AI Studio extraction failed (" + err.message + ") \u2014 falling back to standard extraction");
         extraction = await extractContactsFromSite(cfg, target, opts);
