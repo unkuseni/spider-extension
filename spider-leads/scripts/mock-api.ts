@@ -146,7 +146,7 @@ export function createMockHandler(opts: MockOptions = {}) {
       return json(res, 200, { data: all, total: all.length, page: 1, limit: 50 });
     }
     // AI Studio: prompt → JSON (returns an ARRAY of page objects with metadata.extracted_data).
-    if (method === "POST" && /^\/ai\/(scrape|crawl|search|links)/.test(path)) {
+    if (method === "POST" && /^\/ai\/(scrape|crawl|search|browser|links|unblocker)/.test(path)) {
       const body = await readBody(req);
       const target = String(body.url ?? body.search ?? "https://acme.com/");
       const host = hostnameOf(target);
@@ -240,6 +240,34 @@ export function createMockHandler(opts: MockOptions = {}) {
         links: linksFor(full).map((l) => l.url),
         errors: null,
       });
+    }
+    if (method === "POST" && url === "/unblocker") {
+      const body = await readBody(req);
+      const u = body.url ?? "https://example.com/";
+      return json(res, 200, [{ url: u, status: 200, content: pageContent(u), error: null }]);
+    }
+    if (method === "POST" && url === "/screenshot") {
+      const body = await readBody(req);
+      const u = body.url ?? "https://example.com/";
+      const cdp = body.cdp_params ?? {};
+      const fmt = cdp.format ?? "png";
+      const pixel = fmt === "jpeg"
+        ? "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AfwD/AP/Z"
+        : "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYPhfDwAChwGAERQAvgAAAABJRU5ErkJggg==";
+      return json(res, 200, [{ url: u, status: 200, content: pixel, format: fmt, error: null }]);
+    }
+    if (method === "POST" && url === "/transform") {
+      const body = await readBody(req);
+      const html = String(body.content ?? "");
+      const fmt = body.return_format ?? "markdown";
+      const out = fmt === "text" ? html.replace(/<[^>]+>/g, "") : "# Transformed\n\n" + html.slice(0, 200);
+      return json(res, 200, [{ content: out }]);
+    }
+    if (method === "POST" && path.startsWith("/unlimited/")) {
+      const body = await readBody(req);
+      const u = body.url ?? "https://example.com/";
+      if (path.includes("links")) return json(res, 200, linksFor(u));
+      return json(res, 200, [{ url: u, status: 200, content: pageContent(u), error: null }]);
     }
     if (method === "POST" && url === "/search") {
       const body = await readBody(req);

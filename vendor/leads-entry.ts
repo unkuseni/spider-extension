@@ -18,8 +18,14 @@ export type { LeadRow, PersonRow, CandidateRow, RelationRow } from "../spider-le
 export { verifyEmail } from "../spider-leads/src/plunk.ts";
 export type { VerificationResult } from "../spider-leads/src/types.ts";
 
-export { getSiteLinks, scrapePage, crawlPages, searchPages, extractContactsSpider, fetchStructured, fetchPathFromUrl, aiStudioExtract, listScraperDirectory } from "../spider-leads/src/spider.ts";
-export type { FetchResult, AiStudioPage, ScraperConfig } from "../spider-leads/src/spider.ts";
+export {
+  getSiteLinks, scrapePage, crawlPages, searchPages, extractContactsSpider,
+  fetchStructured, fetchPathFromUrl, aiStudioExtract,
+  listScraperDirectory, screenshotPage, transformHtml, unblockPage,
+  scrapeUnlimited, crawlUnlimited, linksUnlimited,
+  applyOptions,
+} from "../spider-leads/src/spider.ts";
+export type { FetchResult, AiStudioPage, AiStudioRoute, ScraperConfig, ScreenshotResult, SpiderRequestOptions } from "../spider-leads/src/spider.ts";
 export type { PageContent, ContactRecord } from "../spider-leads/src/types.ts";
 
 export { categorizeDomain, parseContacts, CATEGORIES, chatWithTools } from "../spider-leads/src/ai.ts";

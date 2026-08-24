@@ -1,5 +1,7 @@
-// Spider Cloud REST client (https://spider.cloud/docs/overview)
+// Spider Cloud REST client — full API coverage.
+// https://spider.cloud/docs/overview/ · https://spider.cloud/docs/api/
 // All endpoints: Bearer auth, JSON in / JSON out. We call them directly with fetch.
+// Browser-safe (no node imports).
 
 import type { Config } from "./config.ts";
 import type { ContactRecord, PageContent, RequestMode } from "./types.ts";
@@ -15,16 +17,97 @@ export class SpiderError extends Error {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// ---------------------------------------------------------------------------
+// Common request options — every documented Spider Cloud parameter
+// (https://spider.cloud/docs/api/ → "Common Parameters"). Threaded through
+// every endpoint via applyOptions().
+// ---------------------------------------------------------------------------
+
+export interface SpiderRequestOptions {
+  // Rendering
+  mode?: RequestMode;
+  returnFormat?: string;
+  readability?: boolean;
+  metadata?: boolean;
+  encoding?: string;
+  // Crawl control
+  limit?: number;
+  depth?: number;
+  blacklist?: string[];
+  budget?: Record<string, number>;
+  concurrencyLimit?: number;
+  crawlTimeout?: number;
+  // Page interaction
+  cookies?: string[];
+  waitForSelector?: string;
+  waitFor?: number;
+  // Content filtering
+  blockAds?: boolean;
+  blockAnalytics?: boolean;
+  blockStylesheets?: boolean;
+  chunkText?: boolean;
+  chunkSize?: number;
+  // CSS selector extraction (alternative to AI)
+  cssExtractionMap?: Record<string, string>;
+  // Screenshot
+  screenshot?: boolean;
+  fullPage?: boolean;
+  cdpParams?: Record<string, unknown>;
+  // Custom headers to send to the target
+  headers?: Record<string, string>;
+  // Respect robots.txt
+  respectRobots?: boolean;
+  // Override proxy/geo per-request
+  premiumProxy?: boolean;
+  countryCode?: string;
+}
+
+/** Merge all common Spider request parameters into a request body object. */
+export function applyOptions(body: Record<string, unknown>, opts: SpiderRequestOptions = {}): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...body };
+  if (opts.mode) out.request = opts.mode;
+  if (opts.returnFormat) out.return_format = opts.returnFormat;
+  if (opts.readability) out.readability = true;
+  if (opts.metadata !== undefined) out.metadata = opts.metadata;
+  if (opts.encoding) out.encoding = opts.encoding;
+  if (opts.limit !== undefined) out.limit = opts.limit;
+  if (opts.depth !== undefined) out.depth = opts.depth;
+  if (opts.blacklist) out.blacklist = opts.blacklist;
+  if (opts.budget) out.budget = opts.budget;
+  if (opts.concurrencyLimit !== undefined) out.concurrency_limit = opts.concurrencyLimit;
+  if (opts.crawlTimeout !== undefined) out.crawl_timeout = opts.crawlTimeout;
+  if (opts.cookies) out.cookies = opts.cookies;
+  if (opts.waitForSelector) out.wait_for_selector = opts.waitForSelector;
+  if (opts.waitFor !== undefined) out.wait_for = opts.waitFor;
+  if (opts.blockAds !== undefined) out.block_ads = opts.blockAds;
+  if (opts.blockAnalytics !== undefined) out.block_analytics = opts.blockAnalytics;
+  if (opts.blockStylesheets !== undefined) out.block_stylesheets = opts.blockStylesheets;
+  if (opts.chunkText) { out.chunk_text = true; if (opts.chunkSize) out.chunk_size = opts.chunkSize; }
+  if (opts.cssExtractionMap) out.css_extraction_map = opts.cssExtractionMap;
+  if (opts.screenshot !== undefined) out.screenshot = opts.screenshot;
+  if (opts.fullPage !== undefined) out.full_page = opts.fullPage;
+  if (opts.cdpParams) out.cdp_params = opts.cdpParams;
+  if (opts.headers) out.headers = opts.headers;
+  if (opts.respectRobots !== undefined) out.respect_robots = opts.respectRobots;
+  if (opts.premiumProxy !== undefined) out.premium_proxy = opts.premiumProxy;
+  if (opts.countryCode) out.country_code = opts.countryCode;
+  return out;
+}
+
 /**
- * Proxy/geo fields added to every request when configured:
- * premium_proxy rotates through Spider's residential/ISP pool; country_code
- * targets a country for georouting (see https://spider.cloud/docs/overview/).
+ * Proxy/geo fields from the global config (applied when the request itself
+ * doesn't override them).
  */
 function proxyFields(cfg: Config): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (cfg.spiderProxy) out.premium_proxy = true;
   if (cfg.spiderCountry && /^[a-z]{2}$/i.test(cfg.spiderCountry)) out.country_code = cfg.spiderCountry.toLowerCase();
   return out;
+}
+
+/** Build the full request body: global proxy/geo + endpoint fields + per-request options. */
+function buildBody(cfg: Config, base: Record<string, unknown>, opts: SpiderRequestOptions = {}): Record<string, unknown> {
+  return applyOptions({ ...proxyFields(cfg), ...base }, opts);
 }
 
 async function apiPost<T>(
@@ -87,17 +170,21 @@ function pageFrom(raw: any): PageContent | null {
   return { url, markdown: content, status };
 }
 
+// ---------------------------------------------------------------------------
+// Core endpoints
+// ---------------------------------------------------------------------------
+
 /** Collect internal links from a site: POST /links */
 export async function getSiteLinks(
   cfg: Config,
   url: string,
-  opts: { limit?: number; mode?: RequestMode } = {}
+  opts: { limit?: number; mode?: RequestMode; params?: SpiderRequestOptions } = {}
 ): Promise<string[]> {
-  const data = await apiPost<any>(cfg, "/links", {
+  const data = await apiPost<any>(cfg, "/links", buildBody(cfg, {
     url,
     limit: opts.limit ?? cfg.crawlLimit * 5,
     request: opts.mode ?? "smart",
-  });
+  }, opts.params));
   const list = Array.isArray(data) ? data : data.links ?? data.urls ?? [];
   return list
     .map((l: any) => (typeof l === "string" ? l : l.url ?? l.href ?? l.link ?? ""))
@@ -108,15 +195,15 @@ export async function getSiteLinks(
 export async function crawlPages(
   cfg: Config,
   url: string,
-  opts: { limit?: number; depth?: number; mode?: RequestMode; format?: string } = {}
+  opts: { limit?: number; depth?: number; mode?: RequestMode; format?: string; params?: SpiderRequestOptions } = {}
 ): Promise<PageContent[]> {
-  const data = await apiPost<any>(cfg, "/crawl", {
+  const data = await apiPost<any>(cfg, "/crawl", buildBody(cfg, {
     url,
     limit: opts.limit ?? cfg.crawlLimit,
     depth: opts.depth ?? cfg.crawlDepth,
     request: opts.mode ?? "smart",
     return_format: opts.format ?? "markdown",
-  });
+  }, opts.params));
   const arr = Array.isArray(data) ? data : [data];
   return arr.map(pageFrom).filter((p): p is PageContent => p !== null);
 }
@@ -125,14 +212,13 @@ export async function crawlPages(
 export async function scrapePage(
   cfg: Config,
   url: string,
-  opts: { mode?: RequestMode; format?: string } = {}
+  opts: { mode?: RequestMode; format?: string; params?: SpiderRequestOptions } = {}
 ): Promise<PageContent> {
-  const data = await apiPost<any>(cfg, "/scrape", {
-    url,
-    limit: 1,
+  const data = await apiPost<any>(cfg, "/scrape", buildBody(cfg, {
+    url, limit: 1,
     request: opts.mode ?? "smart",
     return_format: opts.format ?? "markdown",
-  });
+  }, opts.params));
   const page = pageFrom(Array.isArray(data) ? data[0] : data);
   if (!page) throw new SpiderError(0, `/scrape returned no content for ${url}`);
   return page;
@@ -142,101 +228,239 @@ export async function scrapePage(
 export async function searchPages(
   cfg: Config,
   query: string,
-  opts: { limit?: number; mode?: RequestMode } = {}
+  opts: { limit?: number; mode?: RequestMode; params?: SpiderRequestOptions } = {}
 ): Promise<PageContent[]> {
-  const data = await apiPost<any>(cfg, "/search", {
+  const data = await apiPost<any>(cfg, "/search", buildBody(cfg, {
     search: query,
     limit: opts.limit ?? 10,
     request: opts.mode ?? "smart",
     return_format: "markdown",
     fetch_page_content: true,
-  });
+  }, opts.params));
   const arr = Array.isArray(data)
     ? data
-    : Array.isArray(data.content)
-      ? data.content
-      : Array.isArray(data.results)
-        ? data.results
+    : Array.isArray(data.content) ? data.content
+      : Array.isArray(data.results) ? data.results
         : [];
   return (arr as any[]).map((r: any) => pageFrom(r)).filter((p): p is PageContent => p !== null && p.markdown.length > 0);
 }
 
-/**
- * Spider AI contact extraction: POST /v1/pipeline/extract-contacts
- * NOTE: this is the legacy v1 pipeline (deprecated upstream in favor of the
- * Fetch API / css_extraction_map, but still documented and functional).
- * Returns raw contact records; caller validates/filters them.
- */
+// ---------------------------------------------------------------------------
+// Screenshot — POST /screenshot (base64-encoded PNG/JPEG/WebP)
+// ---------------------------------------------------------------------------
+
+export interface ScreenshotResult {
+  url: string;
+  /** Base64-encoded image data. */
+  image: string;
+  format: string;
+  status: number;
+}
+
+export async function screenshotPage(
+  cfg: Config,
+  url: string,
+  opts: { format?: "png" | "jpeg" | "webp"; fullPage?: boolean; cdpParams?: Record<string, unknown>; params?: SpiderRequestOptions } = {}
+): Promise<ScreenshotResult> {
+  const cdp: Record<string, unknown> = { format: opts.format ?? "png", ...(opts.cdpParams ?? {}) };
+  if (opts.fullPage !== undefined) cdp.full_page = opts.fullPage;
+  const data = await apiPost<any>(cfg, "/screenshot", buildBody(cfg, {
+    url, cdp_params: cdp,
+  }, { ...opts.params, screenshot: true }));
+  const row = Array.isArray(data) ? data[0] : data;
+  return {
+    url: String(row?.url ?? url),
+    image: String(row?.content ?? row?.screenshot ?? ""),
+    format: String(row?.format ?? opts.format ?? "png"),
+    status: Number(row?.status ?? 0),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Transform — POST /transform (HTML → markdown/text/etc.)
+// ---------------------------------------------------------------------------
+
+export async function transformHtml(
+  cfg: Config,
+  html: string,
+  opts: { returnFormat?: string; params?: SpiderRequestOptions } = {}
+): Promise<string> {
+  const data = await apiPost<any>(cfg, "/transform", buildBody(cfg, {
+    content: html,
+    return_format: opts.returnFormat ?? "markdown",
+  }, opts.params));
+  return String(Array.isArray(data) ? (data[0]?.content ?? "") : (data?.content ?? ""));
+}
+
+// ---------------------------------------------------------------------------
+// Unblocker — POST /unblocker (fetch a page behind bot protection)
+// ---------------------------------------------------------------------------
+
+export async function unblockPage(
+  cfg: Config,
+  url: string,
+  opts: { format?: string; params?: SpiderRequestOptions } = {}
+): Promise<PageContent> {
+  const data = await apiPost<any>(cfg, "/unblocker", buildBody(cfg, {
+    url,
+    return_format: opts.format ?? "markdown",
+  }, opts.params));
+  const page = pageFrom(Array.isArray(data) ? data[0] : data);
+  if (!page) throw new SpiderError(0, `/unblocker returned no content for ${url}`);
+  return page;
+}
+
+// ---------------------------------------------------------------------------
+// Unlimited plan — POST /unlimited/{scrape,crawl,links}
+// Same request/response as the standard endpoints, just a different path.
+// ---------------------------------------------------------------------------
+
+export async function scrapeUnlimited(
+  cfg: Config,
+  url: string,
+  opts: { mode?: RequestMode; format?: string; params?: SpiderRequestOptions } = {}
+): Promise<PageContent> {
+  const data = await apiPost<any>(cfg, "/unlimited/scrape", buildBody(cfg, {
+    url, limit: 1,
+    request: opts.mode ?? "smart",
+    return_format: opts.format ?? "markdown",
+  }, opts.params));
+  const page = pageFrom(Array.isArray(data) ? data[0] : data);
+  if (!page) throw new SpiderError(0, `/unlimited/scrape returned no content for ${url}`);
+  return page;
+}
+
+export async function crawlUnlimited(
+  cfg: Config,
+  url: string,
+  opts: { limit?: number; depth?: number; mode?: RequestMode; format?: string; params?: SpiderRequestOptions } = {}
+): Promise<PageContent[]> {
+  const data = await apiPost<any>(cfg, "/unlimited/crawl", buildBody(cfg, {
+    url,
+    limit: opts.limit ?? cfg.crawlLimit,
+    depth: opts.depth ?? cfg.crawlDepth,
+    request: opts.mode ?? "smart",
+    return_format: opts.format ?? "markdown",
+  }, opts.params));
+  const arr = Array.isArray(data) ? data : [data];
+  return arr.map(pageFrom).filter((p): p is PageContent => p !== null);
+}
+
+export async function linksUnlimited(
+  cfg: Config,
+  url: string,
+  opts: { limit?: number; mode?: RequestMode; params?: SpiderRequestOptions } = {}
+): Promise<string[]> {
+  const data = await apiPost<any>(cfg, "/unlimited/links", buildBody(cfg, {
+    url,
+    limit: opts.limit ?? cfg.crawlLimit * 5,
+    request: opts.mode ?? "smart",
+  }, opts.params));
+  const list = Array.isArray(data) ? data : data.links ?? data.urls ?? [];
+  return list
+    .map((l: any) => (typeof l === "string" ? l : l.url ?? l.href ?? l.link ?? ""))
+    .filter((u: string) => /^https?:\/\//.test(u));
+}
+
+// ---------------------------------------------------------------------------
+// Legacy AI contact extraction: POST /v1/pipeline/extract-contacts
+// ---------------------------------------------------------------------------
+
 export async function extractContactsSpider(
   cfg: Config,
   url: string,
-  opts: { limit?: number; prompt?: string; model?: string } = {}
+  opts: { limit?: number; prompt?: string; model?: string; params?: SpiderRequestOptions } = {}
 ): Promise<ContactRecord[]> {
-  const data = await apiPost<any>(cfg, "/v1/pipeline/extract-contacts", {
+  const data = await apiPost<any>(cfg, "/v1/pipeline/extract-contacts", buildBody(cfg, {
     url,
     limit: opts.limit ?? cfg.crawlLimit,
     model: opts.model ?? "gpt-4o",
     prompt:
       opts.prompt ??
       "Extract all team member contact information: name, email, phone, title, LinkedIn profile.",
-  });
+  }, opts.params));
   const arr = Array.isArray(data) ? data : [];
   return arr.filter((r: any) => r && typeof r === "object");
 }
 
 // ---------------------------------------------------------------------------
 // Fetch API (per-website scraper configs) — https://spider.cloud/api/fetch
-// POST /fetch/{domain}/{path}. First call per domain/path bootstraps an
-// AI-discovered config (selectors, schema, render mode), then hits cache.
 // ---------------------------------------------------------------------------
 
 export interface FetchResult {
   url: string;
-  /** Extracted data in the chosen format (markdown/text) or structured JSON. */
   content: unknown;
   status: number;
   metadata?: { title?: string; description?: string; keywords?: string; og_image?: string } | null;
-  /** Structured data from AI-discovered selectors. */
   css_extracted?: unknown;
   links?: string[];
 }
 
+export function fetchPathFromUrl(input: string): { domain: string; path: string } {
+  let u: URL;
+  try {
+    u = new URL(/^https?:\/\//i.test(input) ? input : "https://" + input);
+  } catch {
+    throw new SpiderError(0, `invalid URL: ${input}`);
+  }
+  const domain = u.hostname.replace(/^www\./, "");
+  const path = (u.pathname || "/").replace(/\/+$/, "") || "/";
+  return { domain, path };
+}
+
+export async function fetchStructured(
+  cfg: Config,
+  input: string,
+  opts: { returnFormat?: string; limit?: number; readability?: boolean; params?: SpiderRequestOptions } = {}
+): Promise<FetchResult> {
+  const { domain, path } = fetchPathFromUrl(input);
+  const body = buildBody(cfg, {}, { ...opts, returnFormat: opts.returnFormat, readability: opts.readability, limit: opts.limit });
+  const data = await apiPost<any>(cfg, `/fetch/${encodeURIComponent(domain)}${encodeURI(path)}`, body);
+  if (!data || typeof data !== "object") throw new SpiderError(0, `/fetch returned no data for ${domain}${path}`);
+  return {
+    url: String(data.url ?? input),
+    content: data.content ?? null,
+    status: Number(data.status ?? 0),
+    metadata: data.metadata ?? null,
+    css_extracted: data.css_extracted ?? null,
+    links: Array.isArray(data.links) ? data.links.map(String) : [],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // AI Studio (prompt → JSON) — https://spider.cloud/docs/ai-studio
-// POST /ai/{scrape,crawl,search,browser,links,unblocker}. Requires an active
-// AI Studio subscription; every request spends credits separately from the
-// standard API billing. Responses are an ARRAY of page objects with
-// metadata.extracted_data holding the structured result.
+// POST /ai/{scrape,crawl,search,browser,links,unblocker}
 // ---------------------------------------------------------------------------
+
+export type AiStudioRoute = "scrape" | "crawl" | "search" | "browser" | "links" | "unblocker";
 
 export interface AiStudioPage {
   url: string;
   status: number;
   error?: string | null;
-  /** Page content in the requested return_format (when requested). */
   content?: unknown;
-  /** Structured data shaped by the prompt / extraction_schema. */
   extractedData?: unknown;
   links?: string[];
+  metadata?: Record<string, unknown> | null;
 }
 
 export async function aiStudioExtract(
   cfg: Config,
-  route: "scrape" | "crawl" | "search" | "links",
+  route: AiStudioRoute,
   urlOrSearch: string,
   prompt: string,
-  opts: { limit?: number; metadata?: boolean; schema?: Record<string, unknown>; returnFormat?: string } = {}
+  opts: { limit?: number; metadata?: boolean; schema?: Record<string, unknown>; returnFormat?: string; cleaningIntent?: "extraction" | "action" | "general"; params?: SpiderRequestOptions } = {}
 ): Promise<AiStudioPage[]> {
-  const body: Record<string, unknown> = {
-    ...proxyFields(cfg),
+  const body = buildBody(cfg, {
     prompt,
     limit: opts.limit ?? 10,
-  };
+  }, opts.params);
   if (route === "search") body.search = urlOrSearch;
   else body.url = urlOrSearch;
-  if (opts.metadata === false) body.metadata = false;
+  if (opts.metadata !== undefined) body.metadata = opts.metadata;
   if (opts.returnFormat) body.return_format = opts.returnFormat;
   if (opts.schema) body.extraction_schema = opts.schema;
+  if (opts.cleaningIntent) body.cleaning_intent = opts.cleaningIntent;
 
   const data = await apiPost<any>(cfg, "/ai/" + route, body);
   const arr = Array.isArray(data)
@@ -251,12 +475,12 @@ export async function aiStudioExtract(
     content: r?.content ?? null,
     extractedData: r?.metadata?.extracted_data ?? r?.extracted_data ?? null,
     links: Array.isArray(r?.links) ? r.links.map(String) : [],
+    metadata: r?.metadata ?? null,
   }));
 }
 
 // ---------------------------------------------------------------------------
-// Scraper Directory (curated config catalog) — https://spider.cloud/docs/api/scraper-directory/
-// GET /data/scraper-directory — NO authentication required. Filter by domain/category.
+// Scraper Directory (curated config catalog) — GET /data/scraper-directory
 // ---------------------------------------------------------------------------
 
 export interface ScraperConfig {
@@ -288,43 +512,4 @@ export async function listScraperDirectory(
   }
   const j: any = await resp.json();
   return Array.isArray(j?.data) ? j.data : [];
-}
-
-export function fetchPathFromUrl(input: string): { domain: string; path: string } {
-  let u: URL;
-  try {
-    u = new URL(/^https?:\/\//i.test(input) ? input : "https://" + input);
-  } catch {
-    throw new SpiderError(0, `invalid URL: ${input}`);
-  }
-  const domain = u.hostname.replace(/^www\./, "");
-  const path = (u.pathname || "/").replace(/\/+$/, "") || "/";
-  return { domain, path };
-}
-
-/**
- * Structured extraction through the curated/AI per-website scraper configs.
- * Works for sites with public configs (zillow.com, indeed.com, yelp.com, …)
- * and bootstraps new ones on the first call.
- */
-export async function fetchStructured(
-  cfg: Config,
-  input: string,
-  opts: { returnFormat?: string; limit?: number; readability?: boolean } = {}
-): Promise<FetchResult> {
-  const { domain, path } = fetchPathFromUrl(input);
-  const body: Record<string, unknown> = { ...proxyFields(cfg) };
-  if (opts.returnFormat) body.return_format = opts.returnFormat;
-  if (opts.limit && opts.limit > 1) body.limit = opts.limit;
-  if (opts.readability) body.readability = true;
-  const data = await apiPost<any>(cfg, `/fetch/${encodeURIComponent(domain)}${encodeURI(path)}`, body);
-  if (!data || typeof data !== "object") throw new SpiderError(0, `/fetch returned no data for ${domain}${path}`);
-  return {
-    url: String(data.url ?? input),
-    content: data.content ?? null,
-    status: Number(data.status ?? 0),
-    metadata: data.metadata ?? null,
-    css_extracted: data.css_extracted ?? null,
-    links: Array.isArray(data.links) ? data.links.map(String) : [],
-  };
 }

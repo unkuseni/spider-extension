@@ -8,7 +8,7 @@ import {
 } from "./pipeline.ts";
 import { runAgent } from "./agent.ts";
 import { enrichDomain } from "./enrich.ts";
-import { fetchStructured, listScraperDirectory } from "./spider.ts";
+import { fetchStructured, listScraperDirectory, screenshotPage, transformHtml, unblockPage, type SpiderRequestOptions } from "./spider.ts";
 import { discoverPluginsDir, installJsonPluginFile, loadPlugins, resolveNamedFilter } from "./plugins.ts";
 import type { Plugin, Person } from "./types.ts";
 import { dbStats, leadsRelatedTo, listLeads, listPeople, relationsForDomain, updateLeadScore } from "./db.ts";
@@ -55,6 +55,11 @@ const FLAGS: Flag[] = [
   { name: "ai-studio", takesValue: false },
   { name: "no-ai-studio", takesValue: false },
   { name: "category", takesValue: true },
+  { name: "cookies", takesValue: true },
+  { name: "wait-for", takesValue: true },
+  { name: "blacklist", takesValue: true },
+  { name: "block-ads", takesValue: false },
+  { name: "metadata", takesValue: false },
   { name: "readability", takesValue: false },
   { name: "guess", takesValue: false },
   { name: "no-guess", takesValue: false },
@@ -114,6 +119,9 @@ COMMANDS
   search <query>          Search the web and extract leads from result pages
   fetch <url>             Structured extraction via Spider's curated/AI per-site scraper
                           configs (zillow.com, indeed.com, yelp.com…; /fetch API)
+  screenshot <url>        Capture a full-page screenshot (PNG/JPEG/WebP) → file
+  transform <html-file>   HTML → markdown/text via Spider's /transform endpoint
+  unblock <url>           Fetch a bot-protected page via Spider's /unblocker endpoint
   employees <domain...>   Employee scraper: extract a site's people (names/titles/emails
                           via AI Studio prompt → JSON when enabled; standard pipeline
                           otherwise), store them as people/leads, optionally infer emails
@@ -152,6 +160,11 @@ FLAGS
       --no-ai-studio   Disable AI Studio endpoints
       --category C     Filter scraper catalog by category (scrapers)
       --readability    Strip navigation/ads, main content only (fetch)
+      --cookies C      Send cookies (comma-separated name=value pairs)
+      --wait-for SEL   Wait for a CSS selector before returning content
+      --blacklist RE   Blacklist URL paths (comma-separated regex patterns)
+      --block-ads      Block advertisements when rendering
+      --metadata       Return page metadata (title, description, keywords)
       --guess          Infer employee emails (pattern-based) after hunting; verify with Plunk
       --no-guess       Disable employee email inference
       --per-person N   Max candidate addresses to try per person (default 3)
@@ -186,6 +199,18 @@ ENV (.env — see .env.example)
   GUESS_EMAILS (true to infer employee emails after hunts)  GITHUB_TOKEN (optional)
   SPIDER_PROXY (true to use the premium proxy pool)  SPIDER_COUNTRY (ISO-2, e.g. us)
 `;
+
+/** Build SpiderRequestOptions from common CLI flags. */
+function spiderParams(flags: Record<string, string | boolean>): SpiderRequestOptions | undefined {
+  const p: SpiderRequestOptions = {};
+  if (typeof flags.cookies === "string") p.cookies = flags.cookies.split(",").map((s) => s.trim()).filter(Boolean);
+  if (typeof flags["wait-for"] === "string") p.waitForSelector = flags["wait-for"];
+  if (typeof flags.blacklist === "string") p.blacklist = flags.blacklist.split(",").map((s) => s.trim()).filter(Boolean);
+  if (flags["block-ads"]) p.blockAds = true;
+  if (flags.metadata) p.metadata = true;
+  if (flags.readability) p.readability = true;
+  return Object.keys(p).length > 0 ? p : undefined;
+}
 
 function numFlag(flags: Record<string, string | boolean>, name: string, def: number): number {
   const v = flags[name];
@@ -500,6 +525,63 @@ async function main(): Promise<number> {
           );
         }
         log.raw("Tip: spider-leads fetch <url> uses these configs automatically (first call bootstraps).");
+        return 0;
+      }
+      case "screenshot": {
+        const url = positionals[0];
+        if (!url) throw new Error("screenshot needs a URL, e.g. spider-leads screenshot https://example.com");
+        const format = (typeof flags.format === "string" ? flags.format : "png") as "png" | "jpeg" | "webp";
+        const res = await screenshotPage(cfg, url, {
+          format,
+          fullPage: true,
+          cdpParams: undefined,
+          params: spiderParams(flags),
+        });
+        const out = typeof flags.output === "string" ? flags.output : `screenshot-${Date.now()}.${format}`;
+        const { writeFile } = await import("node:fs/promises");
+        await writeFile(out, Buffer.from(res.image, "base64"));
+        log.ok(`Saved ${res.url} → ${out} (${format}, ${Math.round(res.image.length * 3 / 4 / 1024)}KB)`);
+        return 0;
+      }
+      case "transform": {
+        const input = positionals[0];
+        if (!input) throw new Error("transform needs an HTML file path or '-' for stdin, e.g. spider-leads transform page.html");
+        const { readFile } = await import("node:fs/promises");
+        let html: string;
+        if (input === "-") {
+          html = await new Promise<string>((resolve) => { let d = ""; process.stdin.setEncoding("utf8"); process.stdin.on("data", (c) => d += c); process.stdin.on("end", () => resolve(d)); process.stdin.resume(); });
+        } else {
+          html = (await readFile(input, "utf8")).toString();
+        }
+        const result = await transformHtml(cfg, html, {
+          returnFormat: typeof flags.format === "string" ? flags.format : "markdown",
+          params: spiderParams(flags),
+        });
+        if (typeof flags.output === "string") {
+          const { writeFile: wf } = await import("node:fs/promises");
+          await wf(flags.output as string, result);
+          log.ok(`Wrote ${flags.output}`);
+        } else {
+          log.raw(result);
+        }
+        return 0;
+      }
+      case "unblock": {
+        const url = positionals[0];
+        if (!url) throw new Error("unblock needs a URL, e.g. spider-leads unblock https://example.com");
+        log.info("Unblocking " + url + " (bot-protection bypass)…");
+        const page = await unblockPage(cfg, url, {
+          format: typeof flags.format === "string" ? flags.format : "markdown",
+          params: spiderParams(flags),
+        });
+        if (typeof flags.output === "string") {
+          const { writeFile } = await import("node:fs/promises");
+          await writeFile(flags.output as string, page.markdown);
+          log.ok(`Wrote ${flags.output} (HTTP ${page.status})`);
+        } else {
+          log.raw(page.markdown.slice(0, 5000));
+        }
+        log.raw(`URL: ${page.url}  (HTTP ${page.status})`);
         return 0;
       }
       case "fetch": {

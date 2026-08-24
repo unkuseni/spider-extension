@@ -153,11 +153,47 @@ var SpiderError = class extends Error {
   }
 };
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function applyOptions(body, opts = {}) {
+  const out = { ...body };
+  if (opts.mode) out.request = opts.mode;
+  if (opts.returnFormat) out.return_format = opts.returnFormat;
+  if (opts.readability) out.readability = true;
+  if (opts.metadata !== void 0) out.metadata = opts.metadata;
+  if (opts.encoding) out.encoding = opts.encoding;
+  if (opts.limit !== void 0) out.limit = opts.limit;
+  if (opts.depth !== void 0) out.depth = opts.depth;
+  if (opts.blacklist) out.blacklist = opts.blacklist;
+  if (opts.budget) out.budget = opts.budget;
+  if (opts.concurrencyLimit !== void 0) out.concurrency_limit = opts.concurrencyLimit;
+  if (opts.crawlTimeout !== void 0) out.crawl_timeout = opts.crawlTimeout;
+  if (opts.cookies) out.cookies = opts.cookies;
+  if (opts.waitForSelector) out.wait_for_selector = opts.waitForSelector;
+  if (opts.waitFor !== void 0) out.wait_for = opts.waitFor;
+  if (opts.blockAds !== void 0) out.block_ads = opts.blockAds;
+  if (opts.blockAnalytics !== void 0) out.block_analytics = opts.blockAnalytics;
+  if (opts.blockStylesheets !== void 0) out.block_stylesheets = opts.blockStylesheets;
+  if (opts.chunkText) {
+    out.chunk_text = true;
+    if (opts.chunkSize) out.chunk_size = opts.chunkSize;
+  }
+  if (opts.cssExtractionMap) out.css_extraction_map = opts.cssExtractionMap;
+  if (opts.screenshot !== void 0) out.screenshot = opts.screenshot;
+  if (opts.fullPage !== void 0) out.full_page = opts.fullPage;
+  if (opts.cdpParams) out.cdp_params = opts.cdpParams;
+  if (opts.headers) out.headers = opts.headers;
+  if (opts.respectRobots !== void 0) out.respect_robots = opts.respectRobots;
+  if (opts.premiumProxy !== void 0) out.premium_proxy = opts.premiumProxy;
+  if (opts.countryCode) out.country_code = opts.countryCode;
+  return out;
+}
 function proxyFields(cfg) {
   const out = {};
   if (cfg.spiderProxy) out.premium_proxy = true;
   if (cfg.spiderCountry && /^[a-z]{2}$/i.test(cfg.spiderCountry)) out.country_code = cfg.spiderCountry.toLowerCase();
   return out;
+}
+function buildBody(cfg, base, opts = {}) {
+  return applyOptions({ ...proxyFields(cfg), ...base }, opts);
 }
 async function apiPost(cfg, path, body, attempts = 3) {
   const merged = { ...proxyFields(cfg), ...body };
@@ -214,68 +250,155 @@ function pageFrom(raw) {
   return { url, markdown: content, status };
 }
 async function getSiteLinks(cfg, url, opts = {}) {
-  const data = await apiPost(cfg, "/links", {
+  const data = await apiPost(cfg, "/links", buildBody(cfg, {
     url,
     limit: opts.limit ?? cfg.crawlLimit * 5,
     request: opts.mode ?? "smart"
-  });
+  }, opts.params));
   const list = Array.isArray(data) ? data : data.links ?? data.urls ?? [];
   return list.map((l) => typeof l === "string" ? l : l.url ?? l.href ?? l.link ?? "").filter((u) => /^https?:\/\//.test(u));
 }
 async function crawlPages(cfg, url, opts = {}) {
-  const data = await apiPost(cfg, "/crawl", {
+  const data = await apiPost(cfg, "/crawl", buildBody(cfg, {
     url,
     limit: opts.limit ?? cfg.crawlLimit,
     depth: opts.depth ?? cfg.crawlDepth,
     request: opts.mode ?? "smart",
     return_format: opts.format ?? "markdown"
-  });
+  }, opts.params));
   const arr = Array.isArray(data) ? data : [data];
   return arr.map(pageFrom).filter((p) => p !== null);
 }
 async function scrapePage(cfg, url, opts = {}) {
-  const data = await apiPost(cfg, "/scrape", {
+  const data = await apiPost(cfg, "/scrape", buildBody(cfg, {
     url,
     limit: 1,
     request: opts.mode ?? "smart",
     return_format: opts.format ?? "markdown"
-  });
+  }, opts.params));
   const page = pageFrom(Array.isArray(data) ? data[0] : data);
   if (!page) throw new SpiderError(0, `/scrape returned no content for ${url}`);
   return page;
 }
 async function searchPages(cfg, query, opts = {}) {
-  const data = await apiPost(cfg, "/search", {
+  const data = await apiPost(cfg, "/search", buildBody(cfg, {
     search: query,
     limit: opts.limit ?? 10,
     request: opts.mode ?? "smart",
     return_format: "markdown",
     fetch_page_content: true
-  });
+  }, opts.params));
   const arr = Array.isArray(data) ? data : Array.isArray(data.content) ? data.content : Array.isArray(data.results) ? data.results : [];
   return arr.map((r) => pageFrom(r)).filter((p) => p !== null && p.markdown.length > 0);
 }
+async function screenshotPage(cfg, url, opts = {}) {
+  const cdp = { format: opts.format ?? "png", ...opts.cdpParams ?? {} };
+  if (opts.fullPage !== void 0) cdp.full_page = opts.fullPage;
+  const data = await apiPost(cfg, "/screenshot", buildBody(cfg, {
+    url,
+    cdp_params: cdp
+  }, { ...opts.params, screenshot: true }));
+  const row = Array.isArray(data) ? data[0] : data;
+  return {
+    url: String(row?.url ?? url),
+    image: String(row?.content ?? row?.screenshot ?? ""),
+    format: String(row?.format ?? opts.format ?? "png"),
+    status: Number(row?.status ?? 0)
+  };
+}
+async function transformHtml(cfg, html, opts = {}) {
+  const data = await apiPost(cfg, "/transform", buildBody(cfg, {
+    content: html,
+    return_format: opts.returnFormat ?? "markdown"
+  }, opts.params));
+  return String(Array.isArray(data) ? data[0]?.content ?? "" : data?.content ?? "");
+}
+async function unblockPage(cfg, url, opts = {}) {
+  const data = await apiPost(cfg, "/unblocker", buildBody(cfg, {
+    url,
+    return_format: opts.format ?? "markdown"
+  }, opts.params));
+  const page = pageFrom(Array.isArray(data) ? data[0] : data);
+  if (!page) throw new SpiderError(0, `/unblocker returned no content for ${url}`);
+  return page;
+}
+async function scrapeUnlimited(cfg, url, opts = {}) {
+  const data = await apiPost(cfg, "/unlimited/scrape", buildBody(cfg, {
+    url,
+    limit: 1,
+    request: opts.mode ?? "smart",
+    return_format: opts.format ?? "markdown"
+  }, opts.params));
+  const page = pageFrom(Array.isArray(data) ? data[0] : data);
+  if (!page) throw new SpiderError(0, `/unlimited/scrape returned no content for ${url}`);
+  return page;
+}
+async function crawlUnlimited(cfg, url, opts = {}) {
+  const data = await apiPost(cfg, "/unlimited/crawl", buildBody(cfg, {
+    url,
+    limit: opts.limit ?? cfg.crawlLimit,
+    depth: opts.depth ?? cfg.crawlDepth,
+    request: opts.mode ?? "smart",
+    return_format: opts.format ?? "markdown"
+  }, opts.params));
+  const arr = Array.isArray(data) ? data : [data];
+  return arr.map(pageFrom).filter((p) => p !== null);
+}
+async function linksUnlimited(cfg, url, opts = {}) {
+  const data = await apiPost(cfg, "/unlimited/links", buildBody(cfg, {
+    url,
+    limit: opts.limit ?? cfg.crawlLimit * 5,
+    request: opts.mode ?? "smart"
+  }, opts.params));
+  const list = Array.isArray(data) ? data : data.links ?? data.urls ?? [];
+  return list.map((l) => typeof l === "string" ? l : l.url ?? l.href ?? l.link ?? "").filter((u) => /^https?:\/\//.test(u));
+}
 async function extractContactsSpider(cfg, url, opts = {}) {
-  const data = await apiPost(cfg, "/v1/pipeline/extract-contacts", {
+  const data = await apiPost(cfg, "/v1/pipeline/extract-contacts", buildBody(cfg, {
     url,
     limit: opts.limit ?? cfg.crawlLimit,
     model: opts.model ?? "gpt-4o",
     prompt: opts.prompt ?? "Extract all team member contact information: name, email, phone, title, LinkedIn profile."
-  });
+  }, opts.params));
   const arr = Array.isArray(data) ? data : [];
   return arr.filter((r) => r && typeof r === "object");
 }
+function fetchPathFromUrl(input) {
+  let u;
+  try {
+    u = new URL(/^https?:\/\//i.test(input) ? input : "https://" + input);
+  } catch {
+    throw new SpiderError(0, `invalid URL: ${input}`);
+  }
+  const domain = u.hostname.replace(/^www\./, "");
+  const path = (u.pathname || "/").replace(/\/+$/, "") || "/";
+  return { domain, path };
+}
+async function fetchStructured(cfg, input, opts = {}) {
+  const { domain, path } = fetchPathFromUrl(input);
+  const body = buildBody(cfg, {}, { ...opts, returnFormat: opts.returnFormat, readability: opts.readability, limit: opts.limit });
+  const data = await apiPost(cfg, `/fetch/${encodeURIComponent(domain)}${encodeURI(path)}`, body);
+  if (!data || typeof data !== "object") throw new SpiderError(0, `/fetch returned no data for ${domain}${path}`);
+  return {
+    url: String(data.url ?? input),
+    content: data.content ?? null,
+    status: Number(data.status ?? 0),
+    metadata: data.metadata ?? null,
+    css_extracted: data.css_extracted ?? null,
+    links: Array.isArray(data.links) ? data.links.map(String) : []
+  };
+}
 async function aiStudioExtract(cfg, route, urlOrSearch, prompt, opts = {}) {
-  const body = {
-    ...proxyFields(cfg),
+  const body = buildBody(cfg, {
     prompt,
     limit: opts.limit ?? 10
-  };
+  }, opts.params);
   if (route === "search") body.search = urlOrSearch;
   else body.url = urlOrSearch;
-  if (opts.metadata === false) body.metadata = false;
+  if (opts.metadata !== void 0) body.metadata = opts.metadata;
   if (opts.returnFormat) body.return_format = opts.returnFormat;
   if (opts.schema) body.extraction_schema = opts.schema;
+  if (opts.cleaningIntent) body.cleaning_intent = opts.cleaningIntent;
   const data = await apiPost(cfg, "/ai/" + route, body);
   const arr = Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : Array.isArray(data?.pages) ? data.pages : data?.data ? data.data : [];
   return arr.map((r) => ({
@@ -284,7 +407,8 @@ async function aiStudioExtract(cfg, route, urlOrSearch, prompt, opts = {}) {
     error: r?.error ?? null,
     content: r?.content ?? null,
     extractedData: r?.metadata?.extracted_data ?? r?.extracted_data ?? null,
-    links: Array.isArray(r?.links) ? r.links.map(String) : []
+    links: Array.isArray(r?.links) ? r.links.map(String) : [],
+    metadata: r?.metadata ?? null
   }));
 }
 async function listScraperDirectory(opts = {}) {
@@ -300,34 +424,6 @@ async function listScraperDirectory(opts = {}) {
   }
   const j = await resp.json();
   return Array.isArray(j?.data) ? j.data : [];
-}
-function fetchPathFromUrl(input) {
-  let u;
-  try {
-    u = new URL(/^https?:\/\//i.test(input) ? input : "https://" + input);
-  } catch {
-    throw new SpiderError(0, `invalid URL: ${input}`);
-  }
-  const domain = u.hostname.replace(/^www\./, "");
-  const path = (u.pathname || "/").replace(/\/+$/, "") || "/";
-  return { domain, path };
-}
-async function fetchStructured(cfg, input, opts = {}) {
-  const { domain, path } = fetchPathFromUrl(input);
-  const body = { ...proxyFields(cfg) };
-  if (opts.returnFormat) body.return_format = opts.returnFormat;
-  if (opts.limit && opts.limit > 1) body.limit = opts.limit;
-  if (opts.readability) body.readability = true;
-  const data = await apiPost(cfg, `/fetch/${encodeURIComponent(domain)}${encodeURI(path)}`, body);
-  if (!data || typeof data !== "object") throw new SpiderError(0, `/fetch returned no data for ${domain}${path}`);
-  return {
-    url: String(data.url ?? input),
-    content: data.content ?? null,
-    status: Number(data.status ?? 0),
-    metadata: data.metadata ?? null,
-    css_extracted: data.css_extracted ?? null,
-    links: Array.isArray(data.links) ? data.links.map(String) : []
-  };
 }
 
 // spider-leads/src/extract.ts
@@ -7869,6 +7965,67 @@ function buildTools(cfg, db, opts = {}) {
         });
       }
     },
+    take_screenshot: {
+      name: "take_screenshot",
+      description: "Capture a full-page screenshot of a URL as a base64-encoded image (PNG/JPEG/WebP). Use for visual evidence, QA, or capturing pages that don't return readable text.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "URL to screenshot" },
+          format: { type: "string", description: "png (default) | jpeg | webp" }
+        },
+        required: ["url"]
+      },
+      async run(args) {
+        const res = await screenshotPage(cfg, String(args.url ?? ""), {
+          format: args.format ?? "png",
+          fullPage: true
+        });
+        return JSON.stringify({
+          url: res.url,
+          format: res.format,
+          status: res.status,
+          image_bytes: res.image.length,
+          image_preview: res.image.slice(0, 80) + "\u2026"
+        });
+      }
+    },
+    transform_html: {
+      name: "transform_html",
+      description: "Convert raw HTML to clean markdown, text, or commonmark via Spider's /transform. Use when you have HTML (from a scrape or paste) and need processed text.",
+      parameters: {
+        type: "object",
+        properties: {
+          html: { type: "string", description: "Raw HTML to transform" },
+          format: { type: "string", description: "markdown (default) | text | commonmark | raw" }
+        },
+        required: ["html"]
+      },
+      async run(args) {
+        const result = await transformHtml(cfg, String(args.html ?? ""), {
+          returnFormat: args.format ? String(args.format) : "markdown"
+        });
+        return preview(result, 2e3);
+      }
+    },
+    unblock_page: {
+      name: "unblock_page",
+      description: "Fetch a page behind bot protection via Spider's /unblocker endpoint \u2014 returns cleaned markdown/text that the standard /scrape could not get. Use for bot-protected sites (Zillow-class).",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "URL to unblock" },
+          format: { type: "string", description: "markdown (default) | text | html" }
+        },
+        required: ["url"]
+      },
+      async run(args) {
+        const page = await unblockPage(cfg, String(args.url ?? ""), {
+          format: args.format ? String(args.format) : "markdown"
+        });
+        return JSON.stringify({ url: page.url, status: page.status, content_preview: preview(page.markdown, 2e3) });
+      }
+    },
     score_leads: {
       name: "score_leads",
       description: "Recompute lead scores + role classification (department, seniority, decision maker, grade A-D) for stored leads, using the configured ICP rules when set. Returns the highest-scoring leads so the model can prioritize outreach.",
@@ -8626,6 +8783,7 @@ export {
   EMPLOYEE_AI_PROMPT,
   PATTERN_LABELS,
   aiStudioExtract,
+  applyOptions,
   buildProfile,
   buildTools,
   candidatesForDomain,
@@ -8636,6 +8794,7 @@ export {
   classifyTitle,
   compileJsonPlugin,
   crawlPages,
+  crawlUnlimited,
   dbStats,
   defaultRunOptions,
   domainOf,
@@ -8664,6 +8823,7 @@ export {
   knownEmailsForDomain,
   leadsRelatedTo,
   learnPatterns,
+  linksUnlimited,
   listLeads,
   listPeople,
   listScraperDirectory,
@@ -8682,11 +8842,15 @@ export {
   scoreFit,
   scoreLead,
   scrapePage,
+  scrapeUnlimited,
+  screenshotPage,
   searchPages,
   splitName,
   storePersons,
   tailorResume,
   toolDefs,
+  transformHtml,
+  unblockPage,
   unverifiedEmails,
   updateLeadScore,
   upsertCandidate,

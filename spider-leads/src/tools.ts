@@ -6,7 +6,7 @@ import type { ToolDef } from "./ai.ts";
 import { categorizeDomain } from "./ai.ts";
 import type { PageContent, Person } from "./types.ts";
 import { classifyEmailType, domainOf, isValidEmail, toRoot } from "./extract.ts";
-import { crawlPages, fetchStructured, getSiteLinks, listScraperDirectory, searchPages, scrapePage } from "./spider.ts";
+import { crawlPages, fetchStructured, getSiteLinks, listScraperDirectory, screenshotPage, searchPages, scrapePage, transformHtml, unblockPage } from "./spider.ts";
 import { defaultRunOptions, extractContactsFromSite, findEmployees, normalizeContacts } from "./pipeline.ts";
 import { enrichDomain } from "./enrich.ts";
 import { extractGithubOrgs } from "./people.ts";
@@ -407,6 +407,74 @@ export function buildTools(cfg: Config, db: Client, opts: AgentToolOpts = {}): R
             description: (c.display_name ?? c.description ?? "").slice(0, 140),
           })),
         });
+      },
+    },
+
+    take_screenshot: {
+      name: "take_screenshot",
+      description:
+        "Capture a full-page screenshot of a URL as a base64-encoded image (PNG/JPEG/WebP). " +
+        "Use for visual evidence, QA, or capturing pages that don't return readable text.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "URL to screenshot" },
+          format: { type: "string", description: "png (default) | jpeg | webp" },
+        },
+        required: ["url"],
+      },
+      async run(args) {
+        const res = await screenshotPage(cfg, String(args.url ?? ""), {
+          format: (args.format as "png" | "jpeg" | "webp") ?? "png",
+          fullPage: true,
+        });
+        return JSON.stringify({
+          url: res.url, format: res.format, status: res.status,
+          image_bytes: res.image.length, image_preview: res.image.slice(0, 80) + "…",
+        });
+      },
+    },
+
+    transform_html: {
+      name: "transform_html",
+      description:
+        "Convert raw HTML to clean markdown, text, or commonmark via Spider's /transform. " +
+        "Use when you have HTML (from a scrape or paste) and need processed text.",
+      parameters: {
+        type: "object",
+        properties: {
+          html: { type: "string", description: "Raw HTML to transform" },
+          format: { type: "string", description: "markdown (default) | text | commonmark | raw" },
+        },
+        required: ["html"],
+      },
+      async run(args) {
+        const result = await transformHtml(cfg, String(args.html ?? ""), {
+          returnFormat: args.format ? String(args.format) : "markdown",
+        });
+        return preview(result, 2000);
+      },
+    },
+
+    unblock_page: {
+      name: "unblock_page",
+      description:
+        "Fetch a page behind bot protection via Spider's /unblocker endpoint — returns " +
+        "cleaned markdown/text that the standard /scrape could not get. Use for " +
+        "bot-protected sites (Zillow-class).",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "URL to unblock" },
+          format: { type: "string", description: "markdown (default) | text | html" },
+        },
+        required: ["url"],
+      },
+      async run(args) {
+        const page = await unblockPage(cfg, String(args.url ?? ""), {
+          format: args.format ? String(args.format) : "markdown",
+        });
+        return JSON.stringify({ url: page.url, status: page.status, content_preview: preview(page.markdown, 2000) });
       },
     },
 
