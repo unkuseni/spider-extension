@@ -168,6 +168,16 @@ pre-filtered by `isValidEmail` (~40 provider domains) so they never reach Plunk.
 Heads-up: these are **guesses** — Plunk confirms deliverability, not correctness, so
 double-check before outreach.
 
+**LinkedIn company pages (public only):** `linkedin <company-slug>` scrapes the public
+LinkedIn company page (browser + premium proxy) and parses it with
+`extractLinkedinCompany` (people.ts): firmographics (industry, size, headquarters, employee
+count, specialties, decoded website) plus the employee cards LinkedIn exposes publicly
+(name + profile URL, designations like `P.Eng`/`PMP` stripped). Those employees are stored
+as `people` at the company's website domain and fed straight into the guessing flow above —
+LinkedIn never publishes personal emails, so this is the sanctioned way to turn its public
+signals into candidates (the `linkedin_employees` agent tool does the same). Live-verified
+on SaskTel: one public card (Ian Flegel) → `ian.flegel@sasktel.com` candidate generated.
+
 ---
 
 ## 5. Setup — step by step

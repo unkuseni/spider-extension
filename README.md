@@ -57,8 +57,10 @@ Scrape any page, crawl entire sites, search the web — powered by [Spider Cloud
   related companies. See [spider-leads](spider-leads/README.md#lead-scoring--relationships).
 - **AI Agent (Leads tab)** — type an objective ("find fintech companies interested in AI and
   verify their emails") and the model drives the whole workflow itself via tool calling:
-  `search_web`, `extract_contacts`, `find_employees`, `guess_emails`, `categorize_company`,
-  `find_relationships`, `score_leads`, `store_leads`, `verify_email`, `query_leads`.
+  `search_web`, `extract_contacts`, `extract_employees`, `find_employees`, `guess_emails`,
+  `linkedin_employees`, `fetch_structured`, `categorize_company`, `find_relationships`,
+  `score_leads`, `store_leads`, `verify_email`, `query_leads`, `take_screenshot`,
+  `transform_html`, `unblock_page`, `list_scrapers`.
   Requires a function-calling model (OpenAI, DeepSeek `deepseek-chat` / `deepseek-v4-flash`, Groq…).
 - **Career tab** — build a profile from your resume (**PDF/DOCX/TXT**, parsed locally),
   tailor resume + cover letter to any job, get a fit score, and draft cold email (opens in your
@@ -72,6 +74,15 @@ Scrape any page, crawl entire sites, search the web — powered by [Spider Cloud
   credits apply) and falls back to the standard extractor otherwise. The **📚 Scrapers**
   button browses Spider's curated scraper-config catalog (Zillow/Indeed/Yelp…) — no key
   needed.
+- **LinkedIn company-page discovery** — `spider-leads linkedin <company>` scrapes a company's
+  **public** LinkedIn page (browser + premium proxy — this is Spider's [LinkedIn scraper](https://spider.cloud/scrapers/linkedin-scraper/))
+  and pulls the firmographics (industry, size, HQ, employee count, specialties, website)
+  plus the employee cards LinkedIn exposes publicly (name + profile URL). Employees become
+  `people` at the company's website domain and go through the normal guessing flow —
+  candidates like `ian.flegel@…` are generated from the learned pattern and Plunk-verified
+  before storage. LinkedIn never publishes personal emails, so this combines the names-only
+  public data with pattern inference (the sanctioned path). The AI agent gets the same
+  power as a tool (`linkedin_employees`).
 - **Discovery depth for outreach** — contact-page detection reaches more sites
   (multilingual: `/equipe`, `/kontakt`, `/impressum`, `/equipo`… plus `/get-in-touch`,
   `/press`, `/sales`, investor-relations), social channels are captured alongside LinkedIn
@@ -91,7 +102,8 @@ Scrape any page, crawl entire sites, search the web — powered by [Spider Cloud
   https://zillow.com/homes/`) for structured data on marketplace sites (Zillow, Indeed,
   Yelp…). See the [site reachability](spider-leads/README.md#scraping-harder-sites) guide —
   company sites / directories / GitHub / job boards work great; **Facebook is out** and
-  LinkedIn only yields public company data, never personal emails.
+  LinkedIn yields only public company data (firmographics + a few employee cards → the
+  `linkedin` command combines those with pattern guessing) — never personal emails.
 - **Assist tab (approval-gated browser control)** — the AI controls the browser: navigate,
   open/close/activate/list tabs, fill application forms from your profile, set text, click
   (non-submit), scroll, copy to clipboard. You approve each action before it runs (optionally
